@@ -11,6 +11,7 @@ pub enum HealthStatus {
     Normal,
     InsufficientSamples,
     NoData,
+    Stale,
     Degraded,
     Abnormal,
 }
@@ -21,6 +22,7 @@ impl HealthStatus {
             Self::Normal => "正常",
             Self::InsufficientSamples => "样本不足",
             Self::NoData => "暂无样本",
+            Self::Stale => "数据过期",
             Self::Degraded => "波动",
             Self::Abnormal => "异常",
         }
@@ -198,7 +200,7 @@ pub fn build_snapshot(
             .into_iter()
             .map(|(group_name, rows)| {
                 let metrics = Accumulator { rows }.finish();
-                let status = classify(config, model, &metrics);
+                let status = classify(config, model, &metrics, generated_at);
                 GroupReport {
                     group_name,
                     status,
@@ -210,7 +212,7 @@ pub fn build_snapshot(
             .iter()
             .map(|group| group.status)
             .max()
-            .unwrap_or_else(|| classify(config, model, &overall));
+            .unwrap_or_else(|| classify(config, model, &overall, generated_at));
         reports.push(ModelReport {
             model_name: model.name.clone(),
             display_name: if model.display_name.is_empty() {
@@ -230,9 +232,19 @@ pub fn build_snapshot(
     }
 }
 
-fn classify(config: &AppConfig, model: &ModelConfig, metrics: &MetricValues) -> HealthStatus {
+fn classify(
+    config: &AppConfig,
+    model: &ModelConfig,
+    metrics: &MetricValues,
+    generated_at: i64,
+) -> HealthStatus {
     if metrics.requests == 0 {
         return HealthStatus::NoData;
+    }
+    if metrics.latest_at > 0
+        && generated_at.saturating_sub(metrics.latest_at) > config.status.stale_after_secs
+    {
+        return HealthStatus::Stale;
     }
     if metrics.requests < config.status.minimum_samples {
         return HealthStatus::InsufficientSamples;
@@ -358,5 +370,12 @@ mod tests {
                 .iter()
                 .any(|group| group.group_name == "not-configured")
         );
+    }
+
+    #[test]
+    fn marks_existing_but_old_samples_as_stale() {
+        let snapshot = build_snapshot(&config(), &[row("success", 1, 0, 100)], 1200, 900);
+        assert_eq!(snapshot.models[0].status, HealthStatus::Stale);
+        assert_eq!(snapshot.models[0].groups[0].status, HealthStatus::Stale);
     }
 }

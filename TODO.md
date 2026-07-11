@@ -67,7 +67,7 @@
 - [x] 拒绝负数、明显超过总耗时的 TTFT 异常值。
 - [x] `use_time` 按秒级精度展示，不伪造成精确毫秒。
 - [x] 支持全局阈值和单模型阈值覆盖。
-- [ ] 状态支持 `normal/degraded/abnormal/no_data/stale/insufficient_samples`。
+- [x] 状态支持 `normal/degraded/abnormal/no_data/stale/insufficient_samples`。
 - [x] 模型总体状态取所有展示分组中的最差状态。
 - [x] 自动跨组错误无法确认分组时归入“自动路由/未确认”。
 
@@ -129,5 +129,4 @@
 - 管理 API 仍需更换后的有效访问令牌；此前暴露且验证失败的令牌不会写入配置或重试。
 - `perf_metric_cache` 目前只有数据库结构，命令路径使用进程内 TTL 缓存；持久化不是主日志统计的上线前置条件。
 - 需要补齐 HTTP 多页/退避、保留期、重启恢复和真实热重载集成测试。
-- 模型状态尚未增加独立 `stale` 枚举；当前由报告头和健康命令明确标记数据过期。
 - 完整模型白名单、QQ 群、管理员 QQ、推送目标及模式仍需上线参数。

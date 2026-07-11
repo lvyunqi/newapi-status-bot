@@ -19,7 +19,7 @@ pub fn format_status(
         || snapshot.generated_at - health.last_success_at > config.status.stale_after_secs;
     let counts = status_counts(&models);
     let mut header = format!(
-        "[模型运行状态] {}\n更新时间: {} | 采集: {}\n白名单: {} | 正常 {} | 波动 {} | 异常 {}",
+        "[模型运行状态] {}\n更新时间: {} | 采集: {}\n白名单: {} | 正常 {} | 波动 {} | 异常 {} | 过期 {} | 无样本 {}",
         window_label(snapshot.window_seconds),
         format_timestamp(snapshot.generated_at),
         if stale { "数据过期" } else { "正常" },
@@ -27,6 +27,8 @@ pub fn format_status(
         counts.normal,
         counts.degraded,
         counts.abnormal,
+        counts.stale,
+        counts.no_data,
     );
     if stale && !health.last_error.is_empty() {
         header.push_str(&format!(
@@ -240,6 +242,8 @@ struct StatusCounts {
     normal: usize,
     degraded: usize,
     abnormal: usize,
+    stale: usize,
+    no_data: usize,
 }
 
 fn status_counts(models: &[&ModelReport]) -> StatusCounts {
@@ -249,7 +253,8 @@ fn status_counts(models: &[&ModelReport]) -> StatusCounts {
             HealthStatus::Normal => counts.normal += 1,
             HealthStatus::Degraded => counts.degraded += 1,
             HealthStatus::Abnormal => counts.abnormal += 1,
-            HealthStatus::NoData | HealthStatus::InsufficientSamples => {}
+            HealthStatus::Stale => counts.stale += 1,
+            HealthStatus::NoData | HealthStatus::InsufficientSamples => counts.no_data += 1,
         }
     }
     counts

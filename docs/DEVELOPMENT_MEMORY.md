@@ -9,21 +9,21 @@
 
 ## Recent Completion
 
-- Added bounded parsing for `other.admin_info.use_channel` channel ID chains.
-- Added an idempotent SQLite v2 migration for sample and request-level retry chains.
-- Aggregated retry chains into model metrics and exposed the top chains in `/模型异常`.
-- Added migration, sanitization, request-merge, aggregation, and report-format tests.
-- Kept channel keys and raw `other` payloads out of local storage.
+- Added explicit `stale` model and group status based on the latest request timestamp.
+- Kept `no_data`, `stale`, and `insufficient_samples` as separate status semantics.
+- Propagated stale state into model worst-status selection and report summary counts.
+- Treated stale data as an anomaly signal for confirmed heartbeat pushes.
+- Added stale boundary tests while retaining collector-level freshness reporting.
 
 ## Next Step
 
-Add explicit stale model/group status propagation to cached reports.
+Add HTTP pagination plus SQLite retention and restart integration tests.
 
 ## Verification Baseline
 
 - `cargo metadata --offline --no-deps --format-version 1`
 - `cargo fmt --all --check`
-- `cargo test --offline` (31 passed, 1 live test ignored by default)
+- `cargo test --offline` (32 passed, 1 live test ignored by default)
 - focused live management-log smoke test (1 passed)
 - `cargo clippy --offline --all-targets -- -D warnings`
 - `cargo build --release --offline`

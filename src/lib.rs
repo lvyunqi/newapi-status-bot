@@ -366,7 +366,9 @@ fn handle_heartbeat(state: &Arc<AppState>, request: &NoticeRequest) {
     let has_alert = snapshot.models.iter().any(|model| {
         matches!(
             model.status,
-            crate::metrics::HealthStatus::Degraded | crate::metrics::HealthStatus::Abnormal
+            crate::metrics::HealthStatus::Stale
+                | crate::metrics::HealthStatus::Degraded
+                | crate::metrics::HealthStatus::Abnormal
         )
     });
 
