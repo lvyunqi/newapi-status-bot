@@ -1,0 +1,10 @@
+/target/
+*.db
+*.db-shm
+*.db-wal
+.env
+config.toml
+*.dll
+*.so
+*.dylib
+

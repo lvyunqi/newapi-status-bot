@@ -1,0 +1,55 @@
+[api]
+base_url = "https://apis.extralink.net"
+admin_user_id = 3
+access_token_env = "NEWAPI_STATUS_ACCESS_TOKEN"
+poll_interval_secs = 30
+initial_backfill_hours = 24
+overlap_secs = 120
+page_size = 100
+max_pages_per_model = 50
+request_timeout_secs = 15
+settlement_grace_secs = 30
+
+[storage]
+database_file = "newapi-status-bot/status.db"
+retention_days = 7
+
+[status]
+default_window = "15m"
+minimum_samples = 5
+normal_success_rate = 99.0
+degraded_success_rate = 95.0
+default_max_ttft_ms = 12000
+default_max_total_ms = 30000
+stale_after_secs = 180
+
+[perf_metrics]
+enabled = true
+cache_ttl_secs = 300
+request_timeout_secs = 3
+default_hours = 24
+
+[bot]
+# 留空时允许所有群查询普通状态命令。
+allowed_group_ids = []
+# 管理命令除 QimenBot role=admin 外，再校验该列表；留空时只使用宿主角色。
+admin_user_ids = []
+max_message_chars = 1800
+
+[push]
+enabled = false
+mode = "change"
+interval_secs = 3600
+target_group_ids = []
+# 多机器人环境建议填写，用于限定由哪个 OneBot self_id 执行推送。
+sender_self_id = ""
+confirmations = 2
+cooldown_secs = 900
+
+[[models]]
+name = "gpt-5.6-terra"
+display_name = "GPT-5.6 Terra"
+# 留空时展示日志中发现的全部分组。
+groups = ["Codex Burst", "Codex Plus"]
+max_ttft_ms = 12000
+max_total_ms = 30000
