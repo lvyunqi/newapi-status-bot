@@ -5,25 +5,26 @@
 - Repository is isolated from the QimenBot framework repository.
 - Dynamic cdylib implementation, SQLite history, metrics, QQ commands, and heartbeat pushes exist.
 - The release DLL and credential-free local config are installed in QimenBot ignored paths.
-- Live New API and QQ integration remain intentionally incomplete.
+- New API management authentication is live-tested; QQ integration remains incomplete.
 
 ## Recent Completion
 
-- Added adaptive time-window batching so oversized log backlogs advance without data loss.
-- Aligned model totals with visible groups while retaining unknown automatic routes.
-- Added model-boundary message chunking, second-precision total latency, and initial anomaly alerts.
-- Verified the API 0.3 descriptor exposes five commands and `meta/Heartbeat`.
-- Passed 24 tests, strict Clippy, release build, metadata, and local DLL load checks.
+- Corrected management authentication to use the raw New API access token header.
+- Added stable authentication, rate-limit, timeout, server, transport, and business error classes.
+- Added tested exponential polling backoff capped at 300 seconds.
+- Added a gated single-model live smoke test and passed it against the management log API.
+- Persisted the valid token only in QimenBot's ignored local `.env`.
 
 ## Next Step
 
-Run one minimal read-only management-log integration after a replacement token is configured.
+Parse and persist the retry channel chain from `other.admin_info.use_channel`.
 
 ## Verification Baseline
 
 - `cargo metadata --offline --no-deps --format-version 1`
 - `cargo fmt --all --check`
-- `cargo test --offline` (24 passed)
+- `cargo test --offline` (28 passed, 1 live test ignored by default)
+- focused live management-log smoke test (1 passed)
 - `cargo clippy --offline --all-targets -- -D warnings`
 - `cargo build --release --offline`
 - Windows `LoadLibrary` and `qimen_plugin_descriptor` export probe on the installed DLL

@@ -44,21 +44,20 @@ pub fn run(state: Arc<AppState>) {
             .read()
             .map(|health| health.consecutive_failures)
             .unwrap_or(1);
-        let multiplier = 1_u64 << failures.min(4);
         let wait_seconds = if cycle_ok {
             state.config.api.poll_interval_secs
         } else {
-            state
-                .config
-                .api
-                .poll_interval_secs
-                .saturating_mul(multiplier)
-                .min(300)
+            backoff_seconds(state.config.api.poll_interval_secs, failures)
         };
         if state.control.wait(Duration::from_secs(wait_seconds)) {
             break;
         }
     }
+}
+
+fn backoff_seconds(poll_interval_secs: u64, consecutive_failures: u32) -> u64 {
+    let multiplier = 1_u64 << consecutive_failures.min(4);
+    poll_interval_secs.saturating_mul(multiplier).min(300)
 }
 
 fn collect_cycle(
@@ -237,5 +236,12 @@ mod tests {
     fn rejects_single_timestamp_over_capacity() {
         let result = select_batch_end(100, 200, 50, |_| Ok(51));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn exponentially_backs_off_and_caps_wait() {
+        assert_eq!(backoff_seconds(10, 1), 20);
+        assert_eq!(backoff_seconds(10, 3), 80);
+        assert_eq!(backoff_seconds(30, 10), 300);
     }
 }
