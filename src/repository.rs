@@ -6,6 +6,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::domain::{LogSample, SampleKind};
 
+const SCHEMA_VERSION: i64 = 2;
+
 pub struct Repository {
     connection: Connection,
 }
@@ -21,6 +23,7 @@ pub struct OutcomeRow {
     pub attempt_count: i64,
     pub error_count: i64,
     pub latest_error_code: String,
+    pub latest_retry_channel_chain: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -63,6 +66,7 @@ impl Repository {
                     ttft_ms INTEGER,
                     partial_failure INTEGER NOT NULL,
                     attempt_index INTEGER NOT NULL,
+                    retry_channel_chain TEXT NOT NULL DEFAULT '',
                     error_code TEXT NOT NULL,
                     status_code INTEGER,
                     error_message TEXT NOT NULL,
@@ -86,6 +90,7 @@ impl Repository {
                     error_count INTEGER NOT NULL,
                     latest_error_code TEXT NOT NULL,
                     latest_error_message TEXT NOT NULL,
+                    latest_retry_channel_chain TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY(request_id, model_name)
                  );
                  CREATE INDEX IF NOT EXISTS idx_outcomes_model_time
@@ -103,10 +108,10 @@ impl Repository {
                     fetched_at INTEGER NOT NULL,
                     response_json TEXT NOT NULL,
                     PRIMARY KEY(model_name, hours)
-                 );
-                 PRAGMA user_version=1;",
+                 );",
             )
             .map_err(|error| format!("迁移 SQLite 失败: {error}"))?;
+        migrate_schema(&connection)?;
         Ok(Self { connection })
     }
 
@@ -122,8 +127,9 @@ impl Repository {
                     sample_key, source_log_id, request_id, upstream_request_id, created_at,
                     log_type, model_name, group_name, channel_id, channel_name, is_stream,
                     prompt_tokens, completion_tokens, total_ms, ttft_ms, partial_failure,
-                    attempt_index, error_code, status_code, error_message, ingested_at
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                    attempt_index, retry_channel_chain, error_code, status_code, error_message,
+                    ingested_at
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
                 params![
                     sample.sample_key,
                     sample.source_log_id,
@@ -142,6 +148,7 @@ impl Repository {
                     sample.ttft_ms,
                     sample.partial_failure as i64,
                     sample.attempt_index,
+                    sample.retry_channel_chain,
                     sample.error_code,
                     sample.status_code,
                     sample.error_message,
@@ -215,7 +222,7 @@ impl Repository {
             .connection
             .prepare(
                 "SELECT model_name,group_name,outcome,last_seen,total_ms,ttft_ms,
-                        attempt_count,error_count,latest_error_code
+                        attempt_count,error_count,latest_error_code,latest_retry_channel_chain
                  FROM request_outcomes
                  WHERE last_seen >= ?1 AND outcome <> 'pending'",
             )
@@ -232,6 +239,7 @@ impl Repository {
                     attempt_count: row.get(6)?,
                     error_count: row.get(7)?,
                     latest_error_code: row.get(8)?,
+                    latest_retry_channel_chain: row.get(9)?,
                 })
             })
             .map_err(|error| format!("执行统计查询失败: {error}"))?;
@@ -279,13 +287,61 @@ impl Repository {
     }
 }
 
+/// 将历史数据库幂等升级到当前版本；中断后再次打开可安全继续。
+fn migrate_schema(connection: &Connection) -> Result<(), String> {
+    let version = connection
+        .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("读取 SQLite schema 版本失败: {error}"))?;
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "SQLite schema 版本 {version} 高于插件支持版本 {SCHEMA_VERSION}"
+        ));
+    }
+    if !has_column(connection, "log_samples", "retry_channel_chain")? {
+        connection
+            .execute(
+                "ALTER TABLE log_samples ADD COLUMN retry_channel_chain TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|error| format!("迁移日志重试链字段失败: {error}"))?;
+    }
+    if !has_column(connection, "request_outcomes", "latest_retry_channel_chain")? {
+        connection
+            .execute(
+                "ALTER TABLE request_outcomes ADD COLUMN latest_retry_channel_chain TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .map_err(|error| format!("迁移请求重试链字段失败: {error}"))?;
+    }
+    connection
+        .pragma_update(None, "user_version", SCHEMA_VERSION)
+        .map_err(|error| format!("更新 SQLite schema 版本失败: {error}"))?;
+    Ok(())
+}
+
+fn has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("读取表结构失败 {table}: {error}"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("查询表结构失败 {table}: {error}"))?;
+    for name in columns {
+        if name.map_err(|error| format!("解析表结构失败 {table}: {error}"))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn update_outcome(transaction: &Transaction<'_>, sample: &LogSample) -> Result<(), String> {
     match sample.kind {
         SampleKind::Error => transaction.execute(
             "INSERT INTO request_outcomes(
                 request_id,model_name,group_name,first_seen,last_seen,outcome,has_consume,
-                total_ms,ttft_ms,attempt_count,error_count,latest_error_code,latest_error_message
-             ) VALUES(?1,?2,?3,?4,?4,'pending',0,?5,NULL,1,1,?6,?7)
+                total_ms,ttft_ms,attempt_count,error_count,latest_error_code,latest_error_message,
+                latest_retry_channel_chain
+             ) VALUES(?1,?2,?3,?4,?4,'pending',0,?5,NULL,1,1,?6,?7,?8)
              ON CONFLICT(request_id,model_name) DO UPDATE SET
                 last_seen=MAX(request_outcomes.last_seen,excluded.last_seen),
                 group_name=CASE WHEN request_outcomes.has_consume=0 THEN excluded.group_name ELSE request_outcomes.group_name END,
@@ -294,17 +350,21 @@ fn update_outcome(transaction: &Transaction<'_>, sample: &LogSample) -> Result<(
                 attempt_count=request_outcomes.attempt_count+1,
                 error_count=request_outcomes.error_count+1,
                 latest_error_code=excluded.latest_error_code,
-                latest_error_message=excluded.latest_error_message",
+                latest_error_message=excluded.latest_error_message,
+                latest_retry_channel_chain=CASE
+                    WHEN excluded.latest_retry_channel_chain<>'' THEN excluded.latest_retry_channel_chain
+                    ELSE request_outcomes.latest_retry_channel_chain END",
             params![sample.request_id,sample.model_name,sample.group_name,sample.created_at,
-                sample.total_ms,sample.error_code,sample.error_message],
+                sample.total_ms,sample.error_code,sample.error_message,sample.retry_channel_chain],
         ),
         SampleKind::Consume => {
             let outcome = if sample.partial_failure { "partial_failed" } else { "success" };
             transaction.execute(
                 "INSERT INTO request_outcomes(
                     request_id,model_name,group_name,first_seen,last_seen,outcome,has_consume,
-                    total_ms,ttft_ms,attempt_count,error_count,latest_error_code,latest_error_message
-                 ) VALUES(?1,?2,?3,?4,?4,?5,1,?6,?7,1,0,'','')
+                    total_ms,ttft_ms,attempt_count,error_count,latest_error_code,
+                    latest_error_message,latest_retry_channel_chain
+                 ) VALUES(?1,?2,?3,?4,?4,?5,1,?6,?7,1,0,'','',?8)
                  ON CONFLICT(request_id,model_name) DO UPDATE SET
                     last_seen=MAX(request_outcomes.last_seen,excluded.last_seen),
                     group_name=excluded.group_name,
@@ -312,9 +372,12 @@ fn update_outcome(transaction: &Transaction<'_>, sample: &LogSample) -> Result<(
                     has_consume=1,
                     total_ms=excluded.total_ms,
                     ttft_ms=excluded.ttft_ms,
-                    attempt_count=request_outcomes.error_count+1",
+                    attempt_count=request_outcomes.error_count+1,
+                    latest_retry_channel_chain=CASE
+                        WHEN excluded.latest_retry_channel_chain<>'' THEN excluded.latest_retry_channel_chain
+                        ELSE request_outcomes.latest_retry_channel_chain END",
                 params![sample.request_id,sample.model_name,sample.group_name,sample.created_at,
-                    outcome,sample.total_ms,sample.ttft_ms],
+                    outcome,sample.total_ms,sample.ttft_ms,sample.retry_channel_chain],
             )
         }
     }
@@ -347,6 +410,7 @@ mod tests {
             ttft_ms: Some(500),
             partial_failure: partial,
             attempt_index: 1,
+            retry_channel_chain: "1->2".to_string(),
             error_code: "upstream_error".to_string(),
             status_code: Some(500),
             error_message: "failed".to_string(),
@@ -377,6 +441,7 @@ mod tests {
         assert_eq!(rows[0].outcome, "success");
         assert_eq!(rows[0].attempt_count, 2);
         assert_eq!(rows[0].error_count, 1);
+        assert_eq!(rows[0].latest_retry_channel_chain, "1->2");
     }
 
     #[test]
@@ -388,5 +453,37 @@ mod tests {
             .unwrap();
         repository.settle_pending(100).unwrap();
         assert_eq!(repository.outcomes_since(0).unwrap()[0].outcome, "failed");
+    }
+
+    #[test]
+    fn migrates_existing_v1_database_to_retry_chain_schema() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("status.db");
+        let repository = Repository::open(&path).unwrap();
+        repository
+            .connection
+            .execute_batch(
+                "ALTER TABLE log_samples DROP COLUMN retry_channel_chain;
+                 ALTER TABLE request_outcomes DROP COLUMN latest_retry_channel_chain;
+                 PRAGMA user_version=1;",
+            )
+            .unwrap();
+        drop(repository);
+
+        let migrated = Repository::open(&path).unwrap();
+        assert!(has_column(&migrated.connection, "log_samples", "retry_channel_chain").unwrap());
+        assert!(
+            has_column(
+                &migrated.connection,
+                "request_outcomes",
+                "latest_retry_channel_chain"
+            )
+            .unwrap()
+        );
+        let version = migrated
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

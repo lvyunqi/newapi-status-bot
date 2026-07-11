@@ -44,6 +44,7 @@ pub struct LogSample {
     pub ttft_ms: Option<i64>,
     pub partial_failure: bool,
     pub attempt_index: i64,
+    pub retry_channel_chain: String,
     pub error_code: String,
     pub status_code: Option<i64>,
     pub error_message: String,
@@ -80,12 +81,19 @@ impl LogSample {
                     .pointer("/stream_status/error_count")
                     .and_then(Value::as_i64)
                     > Some(0));
-        let attempt_index = other
+        let retry_channels = other
             .pointer("/admin_info/use_channel")
             .and_then(Value::as_array)
-            .map(|channels| channels.len() as i64)
-            .filter(|value| *value > 0)
-            .unwrap_or(1);
+            .map(|channels| {
+                channels
+                    .iter()
+                    .filter_map(channel_id_string)
+                    .take(16)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let attempt_index = (retry_channels.len() as i64).max(1);
+        let retry_channel_chain = retry_channels.join("->");
         let error_code = other
             .get("error_code")
             .and_then(value_as_string)
@@ -132,6 +140,7 @@ impl LogSample {
             ttft_ms,
             partial_failure,
             attempt_index,
+            retry_channel_chain,
             error_code,
             status_code,
             error_message: if kind == SampleKind::Error {
@@ -141,6 +150,15 @@ impl LogSample {
             },
         })
     }
+}
+
+fn channel_id_string(value: &Value) -> Option<String> {
+    let channel_id = match value {
+        Value::String(value) => value.trim().parse::<i64>().ok(),
+        Value::Number(value) => value.as_i64(),
+        _ => None,
+    }?;
+    (channel_id > 0).then(|| channel_id.to_string())
 }
 
 fn parse_other(value: &Value) -> Value {
@@ -242,5 +260,18 @@ mod tests {
         let result = redact_error("Bearer abcdefghijkl and sk-abcdefghijk");
         assert!(!result.contains("abcdefghijkl"));
         assert!(!result.contains("abcdefghijk"));
+    }
+
+    #[test]
+    fn parses_and_sanitizes_retry_channel_chain() {
+        let sample = LogSample::from_remote(remote(
+            LOG_TYPE_ERROR,
+            serde_json::json!({
+                "admin_info": {"use_channel": ["12", "invalid", 34, 0, -1]}
+            }),
+        ))
+        .unwrap();
+        assert_eq!(sample.retry_channel_chain, "12->34");
+        assert_eq!(sample.attempt_index, 2);
     }
 }

@@ -9,21 +9,21 @@
 
 ## Recent Completion
 
-- Corrected management authentication to use the raw New API access token header.
-- Added stable authentication, rate-limit, timeout, server, transport, and business error classes.
-- Added tested exponential polling backoff capped at 300 seconds.
-- Added a gated single-model live smoke test and passed it against the management log API.
-- Persisted the valid token only in QimenBot's ignored local `.env`.
+- Added bounded parsing for `other.admin_info.use_channel` channel ID chains.
+- Added an idempotent SQLite v2 migration for sample and request-level retry chains.
+- Aggregated retry chains into model metrics and exposed the top chains in `/模型异常`.
+- Added migration, sanitization, request-merge, aggregation, and report-format tests.
+- Kept channel keys and raw `other` payloads out of local storage.
 
 ## Next Step
 
-Parse and persist the retry channel chain from `other.admin_info.use_channel`.
+Add explicit stale model/group status propagation to cached reports.
 
 ## Verification Baseline
 
 - `cargo metadata --offline --no-deps --format-version 1`
 - `cargo fmt --all --check`
-- `cargo test --offline` (28 passed, 1 live test ignored by default)
+- `cargo test --offline` (31 passed, 1 live test ignored by default)
 - focused live management-log smoke test (1 passed)
 - `cargo clippy --offline --all-targets -- -D warnings`
 - `cargo build --release --offline`

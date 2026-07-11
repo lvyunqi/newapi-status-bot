@@ -89,6 +89,9 @@ pub fn format_errors(
                 text.push_str(&format!("\n  {code}: {count}"));
             }
         }
+        for (chain, count) in model.overall.retry_channel_chains.iter().take(3) {
+            text.push_str(&format!("\n  重试链 {chain}: {count} 次"));
+        }
         text.push_str(&format!(
             "\n  请求错误率 {:.2}% | 尝试错误率 {:.2}%",
             model.overall.error_rate, model.overall.attempt_error_rate
@@ -299,7 +302,10 @@ pub fn window_label(window: i64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+    use crate::metrics::{MetricValues, ModelReport, WindowSnapshot};
 
     #[test]
     fn chunks_on_model_boundary() {
@@ -310,5 +316,33 @@ mod tests {
     #[test]
     fn total_duration_preserves_source_second_precision() {
         assert_eq!(format_total_duration(Some(3000)), "3s");
+    }
+
+    #[test]
+    fn error_report_includes_aggregated_retry_chain() {
+        let config =
+            AppConfig::parse(r#"{"api":{"admin_user_id":3},"models":[{"name":"echo"}]}"#).unwrap();
+        let cache = ReportCache {
+            windows: HashMap::from([(
+                900,
+                WindowSnapshot {
+                    window_seconds: 900,
+                    models: vec![ModelReport {
+                        model_name: "echo".to_string(),
+                        display_name: "echo".to_string(),
+                        status: HealthStatus::Degraded,
+                        overall: MetricValues {
+                            retry_channel_chains: vec![("12->34".to_string(), 2)],
+                            ..MetricValues::default()
+                        },
+                        groups: Vec::new(),
+                    }],
+                    ..WindowSnapshot::default()
+                },
+            )]),
+            ..ReportCache::default()
+        };
+        let chunks = format_errors(&config, &cache, 900, None).unwrap();
+        assert!(chunks.join("\n").contains("重试链 12->34: 2 次"));
     }
 }

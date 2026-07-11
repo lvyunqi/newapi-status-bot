@@ -45,6 +45,7 @@ pub struct MetricValues {
     pub p95_total_ms: Option<i64>,
     pub latest_at: i64,
     pub error_codes: Vec<(String, u64)>,
+    pub retry_channel_chains: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +124,17 @@ impl Accumulator {
         }
         let mut error_codes = error_codes.into_iter().collect::<Vec<_>>();
         error_codes.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        let mut retry_channel_chains = HashMap::<String, u64>::new();
+        for row in &self.rows {
+            if row.attempt_count > 1 && !row.latest_retry_channel_chain.is_empty() {
+                *retry_channel_chains
+                    .entry(row.latest_retry_channel_chain.clone())
+                    .or_default() += 1;
+            }
+        }
+        let mut retry_channel_chains = retry_channel_chains.into_iter().collect::<Vec<_>>();
+        retry_channel_chains
+            .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
         MetricValues {
             requests,
             successes,
@@ -140,6 +152,7 @@ impl Accumulator {
             p95_total_ms: percentile(&totals, 0.95),
             latest_at: self.rows.iter().map(|row| row.last_seen).max().unwrap_or(0),
             error_codes,
+            retry_channel_chains,
         }
     }
 }
@@ -297,6 +310,11 @@ mod tests {
             attempt_count: attempts,
             error_count: errors,
             latest_error_code: String::new(),
+            latest_retry_channel_chain: if attempts > 1 {
+                "1->2".to_string()
+            } else {
+                String::new()
+            },
         }
     }
 
@@ -309,6 +327,7 @@ mod tests {
         assert_eq!(metrics.attempt_error_rate, 75.0);
         assert_eq!(metrics.retry_rate, 100.0);
         assert_eq!(metrics.p50_ttft_ms, Some(300));
+        assert_eq!(metrics.retry_channel_chains[0], ("1->2".to_string(), 2));
     }
 
     #[test]
