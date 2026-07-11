@@ -183,6 +183,8 @@ pub fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+    use tempfile::tempdir;
 
     #[test]
     fn refresh_interrupts_wait_without_stopping() {
@@ -196,5 +198,28 @@ mod tests {
         let control = WorkerControl::default();
         control.request_stop();
         assert!(control.wait(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn worker_exits_within_hot_reload_timeout() {
+        let config = AppConfig::parse(
+            r#"{
+                "api":{
+                    "admin_user_id":3,
+                    "access_token_env":"NEWAPI_STATUS_TEST_TOKEN_THAT_DOES_NOT_EXIST",
+                    "poll_interval_secs":10
+                },
+                "models":[{"name":"echo"}]
+            }"#,
+        )
+        .unwrap();
+        let dir = tempdir().unwrap();
+        let state = AppState::new(config, dir.path().join("status.db"));
+        let started = Instant::now();
+        state.start_worker().unwrap();
+        thread::sleep(Duration::from_millis(50));
+        state.shutdown();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(state.worker.lock().unwrap().is_none());
     }
 }

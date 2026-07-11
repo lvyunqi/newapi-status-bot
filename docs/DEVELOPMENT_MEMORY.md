@@ -9,21 +9,21 @@
 
 ## Recent Completion
 
-- Added explicit `stale` model and group status based on the latest request timestamp.
-- Kept `no_data`, `stale`, and `insufficient_samples` as separate status semantics.
-- Propagated stale state into model worst-status selection and report summary counts.
-- Treated stale data as an anomaly signal for confirmed heartbeat pushes.
-- Added stale boundary tests while retaining collector-level freshness reporting.
+- Added a local HTTP integration test covering probe plus multi-page model-filtered collection.
+- Added retention cleanup and cursor/outcome recovery checks across SQLite reopen.
+- Added request scenarios for retry success, terminal failure, and stream partial failure.
+- Added a real worker start/stop test with a two-second hot-reload deadline.
+- Confirmed every paginated management request carries the whitelisted `model_name`.
 
 ## Next Step
 
-Add HTTP pagination plus SQLite retention and restart integration tests.
+Confirm the production model whitelist and group filters in the local plugin config.
 
 ## Verification Baseline
 
 - `cargo metadata --offline --no-deps --format-version 1`
 - `cargo fmt --all --check`
-- `cargo test --offline` (32 passed, 1 live test ignored by default)
+- `cargo test --offline` (36 passed, 1 live test ignored by default)
 - focused live management-log smoke test (1 passed)
 - `cargo clippy --offline --all-targets -- -D warnings`
 - `cargo build --release --offline`

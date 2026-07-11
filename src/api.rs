@@ -100,7 +100,10 @@ impl NewApiClient {
         Self::with_access_token(config, access_token)
     }
 
-    fn with_access_token(config: &ApiConfig, access_token: String) -> Result<Self, ApiError> {
+    pub(crate) fn with_access_token(
+        config: &ApiConfig,
+        access_token: String,
+    ) -> Result<Self, ApiError> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5.min(config.request_timeout_secs)))
             .timeout(Duration::from_secs(config.request_timeout_secs))

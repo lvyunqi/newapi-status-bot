@@ -456,6 +456,45 @@ mod tests {
     }
 
     #[test]
+    fn records_stream_partial_failure() {
+        let dir = tempdir().unwrap();
+        let mut repository = Repository::open(&dir.path().join("status.db")).unwrap();
+        repository
+            .ingest(&sample("partial", SampleKind::Consume, true), 101)
+            .unwrap();
+        assert_eq!(
+            repository.outcomes_since(0).unwrap()[0].outcome,
+            "partial_failed"
+        );
+    }
+
+    #[test]
+    fn retains_recent_rows_and_recovers_cursor_after_restart() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("status.db");
+        let mut repository = Repository::open(&path).unwrap();
+        let mut old = sample("old", SampleKind::Consume, false);
+        old.request_id = "req-old".to_string();
+        old.created_at = 100;
+        let mut recent = sample("recent", SampleKind::Consume, false);
+        recent.request_id = "req-recent".to_string();
+        recent.created_at = 200;
+        repository.ingest(&old, 201).unwrap();
+        repository.ingest(&recent, 201).unwrap();
+        repository.record_success("echo", 200, 201).unwrap();
+        repository.cleanup(150).unwrap();
+        assert_eq!(repository.stats().unwrap().sample_count, 1);
+        assert_eq!(repository.stats().unwrap().outcome_count, 1);
+        drop(repository);
+
+        let reopened = Repository::open(&path).unwrap();
+        assert_eq!(reopened.cursor("echo").unwrap(), 200);
+        let outcomes = reopened.outcomes_since(0).unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].model_name, "echo");
+    }
+
+    #[test]
     fn migrates_existing_v1_database_to_retry_chain_schema() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("status.db");

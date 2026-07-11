@@ -221,7 +221,13 @@ fn update_failure(state: &AppState, error: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
     use super::*;
+    use crate::config::AppConfig;
+    use tempfile::tempdir;
 
     #[test]
     fn narrows_oversized_backlog_to_largest_complete_window() {
@@ -243,5 +249,54 @@ mod tests {
         assert_eq!(backoff_seconds(10, 1), 20);
         assert_eq!(backoff_seconds(10, 3), 80);
         assert_eq!(backoff_seconds(30, 10), 300);
+    }
+
+    #[test]
+    fn collects_all_pages_with_whitelisted_model_filter() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buffer = [0_u8; 8192];
+                let count = stream.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..count]).to_ascii_lowercase();
+                assert!(request.contains("model_name=echo"));
+                let page_two = request.contains("?p=2&") || request.contains("&p=2&");
+                let id = if page_two { 2 } else { 1 };
+                let body = format!(
+                    r#"{{"success":true,"data":{{"total":2,"items":[{{"id":{id},"created_at":{},"type":2,"model_name":"echo","use_time":1,"channel":1,"group":"default","request_id":"req-{id}","other":{{"frt":100}}}}]}}}}"#,
+                    100 + id
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let config = AppConfig::parse(&format!(
+            r#"{{
+                "api":{{
+                    "base_url":"http://{address}","admin_user_id":3,
+                    "page_size":1,"max_pages_per_model":3,"initial_backfill_hours":1,
+                    "overlap_secs":0,"request_timeout_secs":5
+                }},
+                "models":[{{"name":"echo"}}]
+            }}"#
+        ))
+        .unwrap();
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("status.db");
+        let state = AppState::new(config.clone(), path.clone());
+        let mut repository = Repository::open(&path).unwrap();
+        let client =
+            NewApiClient::with_access_token(&config.api, "test-token".to_string()).unwrap();
+
+        collect_model(&state, &mut repository, &client, "echo", 200).unwrap();
+        server.join().unwrap();
+        assert_eq!(repository.outcomes_since(0).unwrap().len(), 2);
+        assert_eq!(repository.cursor("echo").unwrap(), 200);
     }
 }
