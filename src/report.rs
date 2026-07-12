@@ -321,6 +321,9 @@ fn format_timestamp(timestamp: i64) -> String {
 
 pub fn window_label(window: i64) -> &'static str {
     match window {
+        60 => "近1分钟",
+        300 => "近5分钟",
+        600 => "近10分钟",
         900 => "近15分钟",
         3600 => "近1小时",
         86_400 => "近24小时",
@@ -340,6 +343,13 @@ mod tests {
     fn chunks_on_model_boundary() {
         let blocks = vec!["a".repeat(150), "b".repeat(150)];
         assert_eq!(chunk_reports("header", &blocks, 200).len(), 2);
+    }
+
+    #[test]
+    fn labels_all_supported_short_windows() {
+        assert_eq!(window_label(60), "近1分钟");
+        assert_eq!(window_label(300), "近5分钟");
+        assert_eq!(window_label(600), "近10分钟");
     }
 
     #[test]

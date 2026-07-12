@@ -124,6 +124,9 @@ fn validate_relative_path(path: &str) -> Result<(), String> {
 /// 将命令窗口转换为秒数。
 pub fn parse_window(value: &str) -> Result<i64, String> {
     match value.trim().to_ascii_lowercase().as_str() {
+        "1m" => Ok(60),
+        "5m" => Ok(5 * 60),
+        "10m" => Ok(10 * 60),
         "15m" => Ok(15 * 60),
         "1h" => Ok(60 * 60),
         "24h" => Ok(24 * 60 * 60),
@@ -304,6 +307,9 @@ mod tests {
 
     #[test]
     fn parses_supported_windows() {
+        assert_eq!(parse_window("1m").unwrap(), 60);
+        assert_eq!(parse_window("5m").unwrap(), 300);
+        assert_eq!(parse_window("10m").unwrap(), 600);
         assert_eq!(parse_window("15m").unwrap(), 900);
         assert_eq!(parse_window("7D").unwrap(), 604_800);
         assert!(parse_window("2h").is_err());
