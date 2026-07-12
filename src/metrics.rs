@@ -4,7 +4,15 @@ use crate::config::{AppConfig, ModelConfig};
 use crate::domain::UNKNOWN_GROUP;
 use crate::repository::OutcomeRow;
 
-pub const WINDOWS: [i64; 4] = [15 * 60, 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60];
+pub const WINDOWS: [i64; 7] = [
+    60,
+    5 * 60,
+    10 * 60,
+    15 * 60,
+    60 * 60,
+    24 * 60 * 60,
+    7 * 24 * 60 * 60,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HealthStatus {
@@ -309,6 +317,15 @@ mod tests {
             r#"{"api":{"admin_user_id":3},"models":[{"name":"echo","groups":["default"]}]}"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn snapshot_map_includes_short_windows() {
+        let snapshots = snapshot_map(&config(), &[], 1_000);
+        assert_eq!(snapshots.len(), WINDOWS.len());
+        assert!(snapshots.contains_key(&60));
+        assert!(snapshots.contains_key(&(5 * 60)));
+        assert!(snapshots.contains_key(&(10 * 60)));
     }
 
     fn row(outcome: &str, attempts: i64, errors: i64, ttft: i64) -> OutcomeRow {
