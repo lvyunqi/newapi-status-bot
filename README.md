@@ -1,5 +1,7 @@
 # New API Status Bot
 
+[![Build](https://github.com/lvyunqi/newapi-status-bot/actions/workflows/build.yml/badge.svg)](https://github.com/lvyunqi/newapi-status-bot/actions/workflows/build.yml)
+
 基于 [QimenBot](https://github.com/lvyunqi/QimenBot) 开发的 New API 模型状态监控动态插件。
 
 插件以 QimenBot ABI 0.3 动态插件形式编译为 `cdylib`，可通过 `/plugins reload` 热重载，
@@ -38,6 +40,9 @@ cargo build --release
 | Windows | `target/release/qimen_dynamic_plugin_newapi_status.dll` |
 | Linux | `target/release/libqimen_dynamic_plugin_newapi_status.so` |
 | macOS | `target/release/libqimen_dynamic_plugin_newapi_status.dylib` |
+
+GitHub Actions 会在 Linux、Windows 和 macOS 上自动构建。构建完成后可在对应工作流的
+Artifacts 中下载动态库、`config.example.toml` 和 README。
 
 ## 安装
 
