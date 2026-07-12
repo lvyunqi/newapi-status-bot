@@ -43,11 +43,11 @@ mod plugin {
         description = "查询白名单模型和分组运行状态",
         aliases = "状态,model-status",
         category = "monitoring",
-        scope = "group"
+        scope = "all"
     )]
     fn model_status(request: &CommandRequest) -> CommandResponse {
         let Some(state) = allowed_state(request) else {
-            return CommandResponse::text("当前群未启用模型监控查询");
+            return CommandResponse::text("当前会话未启用模型监控查询");
         };
         let (window, model) = match parse_query(&state.config, request.args.as_str()) {
             Ok(query) => query,
@@ -84,7 +84,7 @@ mod plugin {
                 Err(error) => chunks.push(format!("[模型广场参考]\n获取失败: {error}")),
             }
         }
-        respond_chunks(request.group_id.as_str(), chunks)
+        respond_chunks(request, chunks)
     }
 
     #[command(
@@ -92,11 +92,11 @@ mod plugin {
         description = "显示本地监控模型白名单",
         aliases = "model-list",
         category = "monitoring",
-        scope = "group"
+        scope = "all"
     )]
     fn model_list(request: &CommandRequest) -> CommandResponse {
         let Some(state) = allowed_state(request) else {
-            return CommandResponse::text("当前群未启用模型监控查询");
+            return CommandResponse::text("当前会话未启用模型监控查询");
         };
         let cache = state
             .reports
@@ -105,7 +105,7 @@ mod plugin {
             .map(|value| value.clone())
             .unwrap_or_default();
         let chunks = crate::report::format_model_list(&state.config, &cache);
-        respond_chunks(request.group_id.as_str(), chunks)
+        respond_chunks(request, chunks)
     }
 
     #[command(
@@ -113,11 +113,11 @@ mod plugin {
         description = "查看白名单模型脱敏错误分类",
         aliases = "model-errors",
         category = "monitoring",
-        scope = "group"
+        scope = "all"
     )]
     fn model_errors(request: &CommandRequest) -> CommandResponse {
         let Some(state) = allowed_state(request) else {
-            return CommandResponse::text("当前群未启用模型监控查询");
+            return CommandResponse::text("当前会话未启用模型监控查询");
         };
         let (window, model) = match parse_query(&state.config, request.args.as_str()) {
             Ok(query) => query,
@@ -130,7 +130,7 @@ mod plugin {
             .map(|value| value.clone())
             .unwrap_or_default();
         match crate::report::format_errors(&state.config, &cache, window, model.as_deref()) {
-            Ok(chunks) => respond_chunks(request.group_id.as_str(), chunks),
+            Ok(chunks) => respond_chunks(request, chunks),
             Err(error) => CommandResponse::text(&error),
         }
     }
@@ -224,7 +224,21 @@ fn initialize(init: PluginInitConfig) -> Result<(), String> {
 
 fn allowed_state(request: &CommandRequest) -> Option<Arc<AppState>> {
     let state = crate::state::current()?;
-    group_allowed(&state.config, request.group_id.as_str()).then_some(state)
+    query_allowed(
+        &state.config,
+        request.group_id.as_str(),
+        request.sender_id.as_str(),
+    )
+    .then_some(state)
+}
+
+/// 群聊使用群白名单，私聊使用管理员用户白名单；空白名单保持不过滤的兼容语义。
+fn query_allowed(config: &AppConfig, group_id: &str, sender_id: &str) -> bool {
+    if group_id.is_empty() {
+        admin_allowed(config, sender_id)
+    } else {
+        group_allowed(config, group_id)
+    }
 }
 
 fn group_allowed(config: &AppConfig, group_id: &str) -> bool {
@@ -308,12 +322,17 @@ fn get_perf_metrics(
     Ok(data)
 }
 
-fn respond_chunks(group_id: &str, chunks: Vec<String>) -> CommandResponse {
+/// 单段由宿主回复原会话，多段则根据请求来源主动发送到对应私聊或群聊。
+fn respond_chunks(request: &CommandRequest, chunks: Vec<String>) -> CommandResponse {
     if chunks.len() <= 1 {
         return CommandResponse::text(chunks.first().map(String::as_str).unwrap_or("暂无数据"));
     }
     for chunk in chunks {
-        BotApi::send_group_msg(group_id, &chunk);
+        if request.group_id.is_empty() {
+            BotApi::send_private_msg(request.sender_id.as_str(), &chunk);
+        } else {
+            BotApi::send_group_msg(request.group_id.as_str(), &chunk);
+        }
     }
     CommandResponse::ignore()
 }
@@ -432,6 +451,19 @@ fn should_send_push(
 mod tests {
     use super::*;
 
+    fn command_request(sender_id: &str, group_id: &str) -> CommandRequest {
+        CommandRequest {
+            args: "".into(),
+            command_name: "模型状态".into(),
+            sender_id: sender_id.into(),
+            group_id: group_id.into(),
+            raw_event_json: "{}".into(),
+            sender_nickname: "tester".into(),
+            message_id: "1".into(),
+            timestamp: 1,
+        }
+    }
+
     fn config() -> AppConfig {
         AppConfig::parse(
             r#"{"api":{"admin_user_id":3},"models":[{"name":"echo","display_name":"Echo Model"}]}"#,
@@ -458,11 +490,45 @@ mod tests {
         assert_eq!(descriptor.plugin_id.as_str(), "newapi-status-bot");
         assert_eq!(descriptor.api_version.as_str(), "0.3");
         assert_eq!(descriptor.commands.len(), 5);
+        for name in ["模型状态", "模型列表", "模型异常"] {
+            let command = descriptor
+                .commands
+                .iter()
+                .find(|command| command.name.as_str() == name)
+                .expect("query command should be exported");
+            assert_eq!(command.scope.as_str(), "all");
+        }
         assert!(
             descriptor.routes.iter().any(|route| {
                 route.kind.as_str() == "meta" && route.route.as_str() == "Heartbeat"
             })
         );
+    }
+
+    #[test]
+    fn query_access_uses_group_and_private_allowlists() {
+        let mut config = config();
+        config.bot.allowed_group_ids = vec!["20001".to_string()];
+        config.bot.admin_user_ids = vec!["10001".to_string()];
+
+        assert!(query_allowed(&config, "20001", "someone"));
+        assert!(!query_allowed(&config, "20002", "10001"));
+        assert!(query_allowed(&config, "", "10001"));
+        assert!(!query_allowed(&config, "", "10002"));
+    }
+
+    #[test]
+    fn multi_chunk_response_targets_private_sender() {
+        abi_stable_host_api::drain_send_queue();
+        let request = command_request("10001", "");
+
+        respond_chunks(&request, vec!["first".to_string(), "second".to_string()]);
+
+        let actions = abi_stable_host_api::drain_send_queue();
+        assert_eq!(actions.len(), 2);
+        assert!(actions.iter().all(|action| {
+            action.message_type.as_str() == "private" && action.target_id.as_str() == "10001"
+        }));
     }
 
     #[test]

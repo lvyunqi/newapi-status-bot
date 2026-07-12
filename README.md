@@ -103,8 +103,9 @@ max_total_ms = 30000
 | `/监控健康` | 管理员查看采集器、数据库和推送心跳 |
 | `/监控刷新` | 管理员立即唤醒后台采集线程 |
 
-普通查询受 `bot.allowed_group_ids` 限制。管理命令还需要 QimenBot 管理员角色，并可
-通过 `bot.admin_user_ids` 增加 QQ 用户白名单限制。
+普通查询同时支持群聊和私聊：群聊受 `bot.allowed_group_ids` 限制，私聊受
+`bot.admin_user_ids` 限制；对应列表为空时不限制。管理命令还需要 QimenBot
+管理员角色，并会额外校验 `bot.admin_user_ids`（列表为空时不额外限制）。
 
 ## 推送模式
 
