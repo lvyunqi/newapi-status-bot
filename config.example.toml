@@ -32,7 +32,8 @@ default_hours = 24
 [bot]
 # 留空时允许所有群查询普通状态命令。
 allowed_group_ids = []
-# 管理命令除 QimenBot role=admin 外，再校验该列表；留空时只使用宿主角色。
+# 普通私聊查询使用该用户白名单；留空时允许所有私聊用户。
+# 管理命令除 QimenBot role=admin 外也会校验该列表。
 admin_user_ids = []
 max_message_chars = 1800
 
