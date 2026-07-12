@@ -17,23 +17,16 @@ pub fn format_status(
     let models = select_models(snapshot, model_query)?;
     let stale = health.last_success_at == 0
         || snapshot.generated_at - health.last_success_at > config.status.stale_after_secs;
-    let counts = status_counts(&models);
     let collector_status = if stale {
         "⏳数据过期"
     } else {
         "✅正常"
     };
     let mut header = format!(
-        "📊 模型状态｜{}\n🕒 {}｜采集 {}\n白名单 {}｜✅{} ⚠️{} ❌{} ⏳{} ◻️{}",
+        "📊 模型状态｜{}\n🕒 {}｜采集 {}",
         window_label(snapshot.window_seconds),
         format_timestamp(snapshot.generated_at),
         collector_status,
-        models.len(),
-        counts.normal,
-        counts.degraded,
-        counts.abnormal,
-        counts.stale,
-        counts.no_data,
     );
     if stale && !health.last_error.is_empty() {
         header.push_str(&format!(
@@ -169,50 +162,34 @@ pub fn format_perf_metrics(data: &PerfMetricData, hours: u32) -> String {
 
 fn format_model(model: &ModelReport) -> String {
     let mut text = format!(
-        "{} {}｜{}\n{}｜请求{}｜成功{}｜失败{}｜部分{}\n成功率{:.2}%｜错误率{:.2}%｜重试{:.2}%",
+        "{} {}｜{}",
         status_icon(model.status),
         model.display_name,
-        model.status.label(),
-        model.model_name,
-        model.overall.requests,
-        model.overall.successes,
-        model.overall.failures,
-        model.overall.partial_failures,
-        model.overall.success_rate,
-        model.overall.error_rate,
-        model.overall.retry_rate,
+        status_label(model.status),
     );
-    if model.groups.is_empty() {
-        text.push_str("\n◻️ 暂无分组样本");
+
+    if model.overall.requests > 0 {
+        text.push_str(&format!("\n成功率{:.2}%", model.overall.success_rate));
     }
-    let group_count = model.groups.len();
-    for (index, group) in model.groups.iter().enumerate() {
+
+    for group in &model.groups {
         let metrics = &group.metrics;
-        let branch = if index + 1 == group_count {
-            "└─"
-        } else {
-            "├─"
-        };
         if metrics.requests == 0 {
-            text.push_str(&format!(
-                "\n{branch} {} {}｜暂无样本｜请求{}",
-                status_icon(group.status),
-                group.group_name,
-                metrics.requests,
-            ));
+            text.push_str(&format!("\n✅ {}｜正常", group.group_name));
             continue;
         }
-        let detail_prefix = if index + 1 == group_count {
-            "   "
-        } else {
-            "│  "
-        };
+
         text.push_str(&format!(
-            "\n{branch} {} {}｜请求{}｜成功{:.2}%｜错误{:.2}%\n{detail_prefix}首字：均{}｜中位{}｜P95 {}\n{detail_prefix}总耗：均{}｜中位{}｜P95 {}",
-            status_icon(group.status), group.group_name, metrics.requests, metrics.success_rate,
-            metrics.error_rate, format_duration(metrics.avg_ttft_ms), format_duration(metrics.p50_ttft_ms),
-            format_duration(metrics.p95_ttft_ms), format_total_duration(metrics.avg_total_ms),
-            format_total_duration(metrics.p50_total_ms), format_total_duration(metrics.p95_total_ms),
+            "\n{} {}｜成功{:.2}%\n首字：均{}｜中位{}｜P95 {}\n总耗：均{}｜中位{}｜P95 {}",
+            status_icon(group.status),
+            group.group_name,
+            metrics.success_rate,
+            format_duration(metrics.avg_ttft_ms),
+            format_duration(metrics.p50_ttft_ms),
+            format_duration(metrics.p95_ttft_ms),
+            format_total_duration(metrics.avg_total_ms),
+            format_total_duration(metrics.p50_total_ms),
+            format_total_duration(metrics.p95_total_ms),
         ));
     }
     text
@@ -220,11 +197,18 @@ fn format_model(model: &ModelReport) -> String {
 
 fn status_icon(status: HealthStatus) -> &'static str {
     match status {
-        HealthStatus::Normal => "✅",
+        HealthStatus::Normal | HealthStatus::NoData => "✅",
+        HealthStatus::InsufficientSamples => "◻️",
         HealthStatus::Degraded => "⚠️",
         HealthStatus::Abnormal => "❌",
         HealthStatus::Stale => "⏳",
-        HealthStatus::NoData | HealthStatus::InsufficientSamples => "◻️",
+    }
+}
+
+fn status_label(status: HealthStatus) -> &'static str {
+    match status {
+        HealthStatus::NoData => "正常",
+        _ => status.label(),
     }
 }
 
@@ -259,29 +243,6 @@ fn select_models<'a>(
         })
         .map(|model| vec![model])
         .ok_or_else(|| format!("模型不在白名单中: {query}"))
-}
-
-#[derive(Default)]
-struct StatusCounts {
-    normal: usize,
-    degraded: usize,
-    abnormal: usize,
-    stale: usize,
-    no_data: usize,
-}
-
-fn status_counts(models: &[&ModelReport]) -> StatusCounts {
-    let mut counts = StatusCounts::default();
-    for model in models {
-        match model.status {
-            HealthStatus::Normal => counts.normal += 1,
-            HealthStatus::Degraded => counts.degraded += 1,
-            HealthStatus::Abnormal => counts.abnormal += 1,
-            HealthStatus::Stale => counts.stale += 1,
-            HealthStatus::NoData | HealthStatus::InsufficientSamples => counts.no_data += 1,
-        }
-    }
-    counts
 }
 
 fn chunk_reports(header: &str, blocks: &[String], max_chars: usize) -> Vec<String> {
@@ -398,32 +359,49 @@ mod tests {
         };
 
         let report = format_model(&model);
-        assert!(
-            report.starts_with("❌ GPT-5.6 Sol｜异常\ngpt-5.6-sol｜请求38｜成功30｜失败8｜部分0")
+        assert_eq!(
+            report,
+            "❌ GPT-5.6 Sol｜异常\n成功率78.95%\n❌ Codex Burst｜成功66.67%\n首字：均7.96s｜中位5.25s｜P95 30.10s\n总耗：均22s｜中位17s｜P95 30s\n✅ Codex Plus｜正常"
         );
-        assert!(report.contains("成功率78.95%｜错误率21.05%｜重试57.89%"));
-        assert!(report.contains("├─ ❌ Codex Burst｜请求24｜成功66.67%｜错误33.33%"));
-        assert!(report.contains("│  首字：均7.96s｜中位5.25s｜P95 30.10s"));
-        assert!(report.contains("│  总耗：均22s｜中位17s｜P95 30s"));
-        assert!(report.contains("Codex Plus｜暂无样本｜请求0"));
-        assert!(!report.contains("尝试错误"));
-        assert!(!report.contains("最新"));
-        assert!(!report.contains("P50"));
+        for removed in [
+            "gpt-5.6-sol",
+            "请求",
+            "失败",
+            "部分",
+            "错误",
+            "重试",
+            "├─",
+            "└─",
+            "│",
+            "P50",
+            "暂无样本",
+        ] {
+            assert!(!report.contains(removed), "unexpected field: {removed}");
+        }
     }
 
     #[test]
-    fn status_header_keeps_compact_counts_and_collector_symbol() {
+    fn status_header_omits_counts_and_separates_models() {
         let config = AppConfig::default();
         let snapshot = WindowSnapshot {
             generated_at: 1_700_000_000,
             window_seconds: 900,
-            models: vec![ModelReport {
-                model_name: "echo".to_string(),
-                display_name: "Echo".to_string(),
-                status: HealthStatus::Normal,
-                overall: MetricValues::default(),
-                groups: Vec::new(),
-            }],
+            models: vec![
+                ModelReport {
+                    model_name: "echo".to_string(),
+                    display_name: "Echo".to_string(),
+                    status: HealthStatus::Normal,
+                    overall: MetricValues::default(),
+                    groups: Vec::new(),
+                },
+                ModelReport {
+                    model_name: "empty".to_string(),
+                    display_name: "Empty".to_string(),
+                    status: HealthStatus::NoData,
+                    overall: MetricValues::default(),
+                    groups: Vec::new(),
+                },
+            ],
         };
         let cache = ReportCache {
             windows: HashMap::from([(900, snapshot)]),
@@ -437,15 +415,18 @@ mod tests {
             .unwrap()
             .join("\n");
         assert!(report.contains("📊 模型状态"));
-        assert!(report.contains("白名单 1｜✅1 ⚠️0 ❌0 ⏳0 ◻️0"));
         assert!(report.contains("采集 ✅正常"));
-        assert!(report.contains("✅ Echo｜正常"));
-        assert!(report.contains("◻️ 暂无分组样本"));
+        assert!(report.contains("✅ Echo｜正常\n\n✅ Empty｜正常"));
+        assert!(!report.contains("白名单"));
+        assert!(!report.contains("请求"));
+        assert!(!report.contains("暂无分组样本"));
         assert_eq!(status_icon(HealthStatus::Normal), "✅");
         assert_eq!(status_icon(HealthStatus::Degraded), "⚠️");
         assert_eq!(status_icon(HealthStatus::Abnormal), "❌");
         assert_eq!(status_icon(HealthStatus::Stale), "⏳");
-        assert_eq!(status_icon(HealthStatus::NoData), "◻️");
+        assert_eq!(status_icon(HealthStatus::NoData), "✅");
+        assert_eq!(status_icon(HealthStatus::InsufficientSamples), "◻️");
+        assert_eq!(status_label(HealthStatus::NoData), "正常");
     }
 
     #[test]
