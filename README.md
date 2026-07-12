@@ -28,7 +28,7 @@
 
 ```powershell
 cargo test --offline
-cargo build --release --offline
+cargo build --release
 ```
 
 构建产物：
@@ -158,7 +158,7 @@ New API 每次失败渠道尝试会产生一条错误日志，最终成功时还
 cargo fmt --all --check
 cargo test --offline
 cargo clippy --offline --all-targets -- -D warnings
-cargo build --release --offline
+cargo build --release
 ```
 
 真实管理日志测试默认忽略，只有显式设置测试开关、管理令牌和白名单模型后才会执行。
