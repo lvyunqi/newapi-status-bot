@@ -18,11 +18,16 @@ pub fn format_status(
     let stale = health.last_success_at == 0
         || snapshot.generated_at - health.last_success_at > config.status.stale_after_secs;
     let counts = status_counts(&models);
+    let collector_status = if stale {
+        "⏳数据过期"
+    } else {
+        "✅正常"
+    };
     let mut header = format!(
-        "[模型运行状态] {}\n更新时间: {} | 采集: {}\n白名单: {} | 正常 {} | 波动 {} | 异常 {} | 过期 {} | 无样本 {}",
+        "📊 模型状态｜{}\n🕒 {}｜采集 {}\n白名单 {}｜✅{} ⚠️{} ❌{} ⏳{} ◻️{}",
         window_label(snapshot.window_seconds),
         format_timestamp(snapshot.generated_at),
-        if stale { "数据过期" } else { "正常" },
+        collector_status,
         models.len(),
         counts.normal,
         counts.degraded,
@@ -32,7 +37,7 @@ pub fn format_status(
     );
     if stale && !health.last_error.is_empty() {
         header.push_str(&format!(
-            "\n采集错误: {}",
+            "\n采集错误｜{}",
             truncate(&health.last_error, 160)
         ));
     }
@@ -164,9 +169,11 @@ pub fn format_perf_metrics(data: &PerfMetricData, hours: u32) -> String {
 
 fn format_model(model: &ModelReport) -> String {
     let mut text = format!(
-        "[{}] {}\n总体: 请求 {} | 成功 {} | 失败 {} | 部分失败 {}\n正常 {:.2}% | 错误 {:.2}% | 重试 {:.2}%",
-        model.status.label(),
+        "{} {}｜{}\n{}｜请求{}｜成功{}｜失败{}｜部分{}\n成功率{:.2}%｜错误率{:.2}%｜重试{:.2}%",
+        status_icon(model.status),
         model.display_name,
+        model.status.label(),
+        model.model_name,
         model.overall.requests,
         model.overall.successes,
         model.overall.failures,
@@ -175,33 +182,50 @@ fn format_model(model: &ModelReport) -> String {
         model.overall.error_rate,
         model.overall.retry_rate,
     );
-    if model.model_name != model.display_name {
-        text.push_str(&format!("\n模型名: {}", model.model_name));
-    }
     if model.groups.is_empty() {
-        text.push_str("\n  暂无分组样本");
+        text.push_str("\n◻️ 暂无分组样本");
     }
-    for group in &model.groups {
+    let group_count = model.groups.len();
+    for (index, group) in model.groups.iter().enumerate() {
         let metrics = &group.metrics;
+        let branch = if index + 1 == group_count {
+            "└─"
+        } else {
+            "├─"
+        };
+        if metrics.requests == 0 {
+            text.push_str(&format!(
+                "\n{branch} {} {}｜暂无样本｜请求{}",
+                status_icon(group.status),
+                group.group_name,
+                metrics.requests,
+            ));
+            continue;
+        }
+        let detail_prefix = if index + 1 == group_count {
+            "   "
+        } else {
+            "│  "
+        };
         text.push_str(&format!(
-            "\n\n  {} [{}]\n  请求 {} | 正常 {:.2}% | 错误 {:.2}%\n  首字 平均 {} / P50 {} / P95 {}\n  总耗时 平均 {} / P50 {} / P95 {}\n  尝试错误 {:.2}% | 重试 {:.2}% | 最新 {}",
-            group.group_name,
-            group.status.label(),
-            metrics.requests,
-            metrics.success_rate,
-            metrics.error_rate,
-            format_duration(metrics.avg_ttft_ms),
-            format_duration(metrics.p50_ttft_ms),
-            format_duration(metrics.p95_ttft_ms),
-            format_total_duration(metrics.avg_total_ms),
-            format_total_duration(metrics.p50_total_ms),
-            format_total_duration(metrics.p95_total_ms),
-            metrics.attempt_error_rate,
-            metrics.retry_rate,
-            format_timestamp(metrics.latest_at),
+            "\n{branch} {} {}｜请求{}｜成功{:.2}%｜错误{:.2}%\n{detail_prefix}首字：均{}｜中位{}｜P95 {}\n{detail_prefix}总耗：均{}｜中位{}｜P95 {}",
+            status_icon(group.status), group.group_name, metrics.requests, metrics.success_rate,
+            metrics.error_rate, format_duration(metrics.avg_ttft_ms), format_duration(metrics.p50_ttft_ms),
+            format_duration(metrics.p95_ttft_ms), format_total_duration(metrics.avg_total_ms),
+            format_total_duration(metrics.p50_total_ms), format_total_duration(metrics.p95_total_ms),
         ));
     }
     text
+}
+
+fn status_icon(status: HealthStatus) -> &'static str {
+    match status {
+        HealthStatus::Normal => "✅",
+        HealthStatus::Degraded => "⚠️",
+        HealthStatus::Abnormal => "❌",
+        HealthStatus::Stale => "⏳",
+        HealthStatus::NoData | HealthStatus::InsufficientSamples => "◻️",
+    }
 }
 
 fn format_duration(value: Option<i64>) -> String {
@@ -267,7 +291,7 @@ fn chunk_reports(header: &str, blocks: &[String], max_chars: usize) -> Vec<Strin
     for block in blocks {
         if current.chars().count() + 2 + block.chars().count() > max_chars && current != header {
             chunks.push(current);
-            current = format!("[模型运行状态·续]\n\n{block}");
+            current = format!("📊 模型状态｜续\n\n{block}");
         } else {
             current.push_str("\n\n");
             current.push_str(block);
@@ -310,7 +334,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::metrics::{MetricValues, ModelReport, WindowSnapshot};
+    use crate::metrics::{GroupReport, MetricValues, ModelReport, WindowSnapshot};
 
     #[test]
     fn chunks_on_model_boundary() {
@@ -321,6 +345,97 @@ mod tests {
     #[test]
     fn total_duration_preserves_source_second_precision() {
         assert_eq!(format_total_duration(Some(3000)), "3s");
+    }
+
+    #[test]
+    fn status_report_uses_compact_model_and_group_layout() {
+        let model = ModelReport {
+            model_name: "gpt-5.6-sol".to_string(),
+            display_name: "GPT-5.6 Sol".to_string(),
+            status: HealthStatus::Abnormal,
+            overall: MetricValues {
+                requests: 38,
+                successes: 30,
+                failures: 8,
+                success_rate: 78.95,
+                error_rate: 21.05,
+                retry_rate: 57.89,
+                ..MetricValues::default()
+            },
+            groups: vec![
+                GroupReport {
+                    group_name: "Codex Burst".to_string(),
+                    status: HealthStatus::Abnormal,
+                    metrics: MetricValues {
+                        requests: 24,
+                        success_rate: 66.67,
+                        error_rate: 33.33,
+                        avg_ttft_ms: Some(7960),
+                        p50_ttft_ms: Some(5250),
+                        p95_ttft_ms: Some(30_100),
+                        avg_total_ms: Some(22_000),
+                        p50_total_ms: Some(17_000),
+                        p95_total_ms: Some(30_000),
+                        ..MetricValues::default()
+                    },
+                },
+                GroupReport {
+                    group_name: "Codex Plus".to_string(),
+                    status: HealthStatus::NoData,
+                    metrics: MetricValues::default(),
+                },
+            ],
+        };
+
+        let report = format_model(&model);
+        assert!(
+            report.starts_with("❌ GPT-5.6 Sol｜异常\ngpt-5.6-sol｜请求38｜成功30｜失败8｜部分0")
+        );
+        assert!(report.contains("成功率78.95%｜错误率21.05%｜重试57.89%"));
+        assert!(report.contains("├─ ❌ Codex Burst｜请求24｜成功66.67%｜错误33.33%"));
+        assert!(report.contains("│  首字：均7.96s｜中位5.25s｜P95 30.10s"));
+        assert!(report.contains("│  总耗：均22s｜中位17s｜P95 30s"));
+        assert!(report.contains("Codex Plus｜暂无样本｜请求0"));
+        assert!(!report.contains("尝试错误"));
+        assert!(!report.contains("最新"));
+        assert!(!report.contains("P50"));
+    }
+
+    #[test]
+    fn status_header_keeps_compact_counts_and_collector_symbol() {
+        let config = AppConfig::default();
+        let snapshot = WindowSnapshot {
+            generated_at: 1_700_000_000,
+            window_seconds: 900,
+            models: vec![ModelReport {
+                model_name: "echo".to_string(),
+                display_name: "Echo".to_string(),
+                status: HealthStatus::Normal,
+                overall: MetricValues::default(),
+                groups: Vec::new(),
+            }],
+        };
+        let cache = ReportCache {
+            windows: HashMap::from([(900, snapshot)]),
+            ..ReportCache::default()
+        };
+        let health = CollectorHealth {
+            last_success_at: 1_700_000_000,
+            ..CollectorHealth::default()
+        };
+        let report = format_status(&config, &cache, &health, 900, None)
+            .unwrap()
+            .join("\n");
+        assert!(report.contains("📊 模型状态"));
+        assert!(report.contains("白名单 1｜✅1 ⚠️0 ❌0 ⏳0 ◻️0"));
+        assert!(report.contains("采集 ✅正常"));
+        assert!(report.contains("✅ Echo｜正常"));
+        assert!(report.contains("◻️ 暂无分组样本"));
+        assert_eq!(status_icon(HealthStatus::Normal), "✅");
+        assert_eq!(status_icon(HealthStatus::Degraded), "⚠️");
+        assert_eq!(status_icon(HealthStatus::Abnormal), "❌");
+        assert_eq!(status_icon(HealthStatus::Stale), "⏳");
+        assert_eq!(status_icon(HealthStatus::NoData), "◻️");
     }
 
     #[test]

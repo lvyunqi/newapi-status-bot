@@ -41,8 +41,8 @@ cargo build --release
 | Linux | `target/release/libqimen_dynamic_plugin_newapi_status.so` |
 | macOS | `target/release/libqimen_dynamic_plugin_newapi_status.dylib` |
 
-GitHub Actions 会在 Linux、Windows 和 macOS 上自动构建。构建完成后可在对应工作流的
-Artifacts 中下载动态库、`config.example.toml` 和 README。
+GitHub Actions 会在 Linux、Windows 和 macOS 上自动构建。普通分支构建可在工作流的
+Artifacts 中下载；推送 tag 后会自动创建 GitHub Release 并上传三平台压缩包。
 
 ## 安装
 
