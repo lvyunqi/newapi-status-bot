@@ -40,12 +40,16 @@ impl HealthStatus {
 #[derive(Debug, Clone, Default)]
 pub struct MetricValues {
     pub requests: u64,
+    #[allow(dead_code)]
     pub successes: u64,
+    #[allow(dead_code)]
     pub failures: u64,
+    #[allow(dead_code)]
     pub partial_failures: u64,
     pub success_rate: f64,
     pub error_rate: f64,
     pub attempt_error_rate: f64,
+    #[allow(dead_code)]
     pub retry_rate: f64,
     pub avg_ttft_ms: Option<i64>,
     pub p50_ttft_ms: Option<i64>,
