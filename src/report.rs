@@ -279,10 +279,12 @@ fn format_timestamp(timestamp: i64) -> String {
     if timestamp <= 0 {
         return "--".to_string();
     }
+    let timezone =
+        chrono::FixedOffset::east_opt(8 * 60 * 60).expect("UTC+8 display offset must be valid");
     chrono::DateTime::from_timestamp(timestamp, 0)
         .map(|value| {
             value
-                .with_timezone(&chrono::Local)
+                .with_timezone(&timezone)
                 .format("%m-%d %H:%M:%S")
                 .to_string()
         })
@@ -325,6 +327,11 @@ mod tests {
     #[test]
     fn total_duration_preserves_source_second_precision() {
         assert_eq!(format_total_duration(Some(3000)), "3s");
+    }
+
+    #[test]
+    fn timestamp_uses_utc_plus_eight() {
+        assert_eq!(format_timestamp(1_700_000_000), "11-15 06:13:20");
     }
 
     #[test]
