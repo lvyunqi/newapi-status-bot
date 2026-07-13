@@ -36,22 +36,25 @@ pub fn maybe_push(state: &Arc<AppState>, now: i64) {
     else {
         return;
     };
-    let reports = state
-        .reports
-        .read()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_default();
+    let snapshot = match crate::query::load_window_snapshot(
+        &state.config,
+        &state.database_path,
+        default_window,
+        now,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("[newapi-status-bot] load push snapshot failed: {error}");
+            return;
+        }
+    };
     let health = state
         .health
         .read()
         .ok()
         .map(|value| value.clone())
         .unwrap_or_default();
-    let Some(snapshot) = reports.windows.get(&default_window) else {
-        return;
-    };
-    let (fingerprint, has_alert) = snapshot_signal(snapshot);
+    let (fingerprint, has_alert) = snapshot_signal(&snapshot);
     let should_send = {
         let Ok(mut push) = state.push.lock() else {
             return;
@@ -62,9 +65,7 @@ pub fn maybe_push(state: &Arc<AppState>, now: i64) {
         return;
     }
 
-    let Ok(chunks) =
-        crate::report::format_status(&state.config, &reports, &health, default_window, None)
-    else {
+    let Ok(chunks) = crate::report::format_status(&state.config, &snapshot, &health, None) else {
         return;
     };
     let attempts = enqueue_chunks_with(&config.targets, &chunks, send_text_to_target);

@@ -3,9 +3,8 @@ use std::time::Duration;
 
 use crate::api::NewApiClient;
 use crate::domain::LogSample;
-use crate::metrics::snapshot_map;
 use crate::repository::Repository;
-use crate::state::{AppState, ReportCache, unix_now};
+use crate::state::{AppState, unix_now};
 
 /// 后台线程入口。所有日志网络访问和 SQLite 写入均保持在该线程内。
 pub fn run(state: Arc<AppState>) {
@@ -83,17 +82,6 @@ fn collect_cycle(
     }
 
     repository.settle_pending(now - state.config.api.settlement_grace_secs)?;
-    let retention = i64::from(state.config.storage.retention_days) * 24 * 60 * 60;
-    let outcomes = repository.outcomes_since(now - retention)?;
-    let reports = snapshot_map(&state.config, &outcomes, now);
-    let database = repository.stats()?;
-    if let Ok(mut cache) = state.reports.write() {
-        *cache = ReportCache {
-            generated_at: now,
-            windows: reports,
-            database,
-        };
-    }
 
     if completed_models == 0 {
         return Err(if failures.is_empty() {

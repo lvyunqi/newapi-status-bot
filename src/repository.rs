@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 
 use crate::domain::{LogSample, SampleKind};
 
@@ -33,6 +33,19 @@ pub struct DatabaseStats {
 }
 
 impl Repository {
+    /// Open the existing plugin database for concurrent live report queries.
+    pub fn open_read_only(path: &Path) -> Result<Self, String> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("打开 SQLite 只读连接失败 {}: {error}", path.display()))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(|error| format!("设置 SQLite 只读超时失败: {error}"))?;
+        connection
+            .execute_batch("PRAGMA query_only=ON; PRAGMA foreign_keys=ON;")
+            .map_err(|error| format!("配置 SQLite 只读连接失败: {error}"))?;
+        Ok(Self { connection })
+    }
+
     /// 打开插件私有 SQLite，并完成幂等迁移。
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {

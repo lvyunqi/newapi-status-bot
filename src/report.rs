@@ -1,31 +1,29 @@
 use crate::api::PerfMetricData;
 use crate::config::AppConfig;
 use crate::metrics::{HealthStatus, ModelReport, WindowSnapshot};
-use crate::state::{CollectorHealth, ReportCache};
+use crate::repository::DatabaseStats;
+use crate::state::CollectorHealth;
 
 pub fn format_status(
     config: &AppConfig,
-    cache: &ReportCache,
+    snapshot: &WindowSnapshot,
     health: &CollectorHealth,
-    window: i64,
     model_query: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let snapshot = cache
-        .windows
-        .get(&window)
-        .ok_or_else(|| "统计快照尚未生成，请稍后重试".to_string())?;
     let models = select_models(snapshot, model_query)?;
     let stale = health.last_success_at == 0
-        || snapshot.generated_at - health.last_success_at > config.status.stale_after_secs;
+        || snapshot.generated_at.saturating_sub(health.last_success_at)
+            > config.status.stale_after_secs;
     let collector_status = if stale {
         "⏳数据过期"
     } else {
         "✅正常"
     };
     let mut header = format!(
-        "📊 模型状态｜{}\n🕒 {}｜采集 {}",
+        "📊 模型状态｜{}\n🕒 {} - {}｜采集 {}",
         window_label(snapshot.window_seconds),
         format_timestamp(snapshot.generated_at),
+        format_time(health.last_success_at),
         collector_status,
     );
     if stale && !health.last_error.is_empty() {
@@ -45,7 +43,7 @@ pub fn format_status(
     ))
 }
 
-pub fn format_model_list(config: &AppConfig, cache: &ReportCache) -> Vec<String> {
+pub fn format_model_list(config: &AppConfig, generated_at: i64) -> Vec<String> {
     let header = format!("[模型监控白名单]\n共 {} 个模型", config.models.len());
     let blocks = config.models.iter().map(|model| {
         let display = if model.display_name.is_empty() {
@@ -61,25 +59,17 @@ pub fn format_model_list(config: &AppConfig, cache: &ReportCache) -> Vec<String>
         format!("- {display} ({})\n  分组: {groups}", model.name)
     });
     let mut blocks = blocks.collect::<Vec<_>>();
-    blocks.push(format!(
-        "快照时间: {}",
-        format_timestamp(cache.generated_at)
-    ));
+    blocks.push(format!("快照时间: {}", format_timestamp(generated_at)));
     chunk_reports(&header, &blocks, config.bot.max_message_chars)
 }
 
 pub fn format_errors(
     config: &AppConfig,
-    cache: &ReportCache,
-    window: i64,
+    snapshot: &WindowSnapshot,
     model_query: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let snapshot = cache
-        .windows
-        .get(&window)
-        .ok_or_else(|| "统计快照尚未生成，请稍后重试".to_string())?;
     let models = select_models(snapshot, model_query)?;
-    let header = format!("[模型异常摘要] {}", window_label(window));
+    let header = format!("[模型异常摘要] {}", window_label(snapshot.window_seconds));
     let blocks = models.into_iter().map(|model| {
         let mut text = model.display_name.clone();
         if model.overall.error_codes.is_empty() {
@@ -106,7 +96,7 @@ pub fn format_errors(
 }
 
 pub fn format_health(
-    cache: &ReportCache,
+    database: &DatabaseStats,
     health: &CollectorHealth,
     database_path: &str,
     push_enabled: bool,
@@ -134,8 +124,8 @@ pub fn format_health(
         format_timestamp(health.last_attempt_at),
         format_timestamp(health.last_success_at),
         health.consecutive_failures,
-        cache.database.sample_count,
-        cache.database.outcome_count,
+        database.sample_count,
+        database.outcome_count,
         if health.last_error.is_empty() {
             "正常"
         } else {
@@ -291,6 +281,22 @@ fn format_timestamp(timestamp: i64) -> String {
         .unwrap_or_else(|| timestamp.to_string())
 }
 
+fn format_time(timestamp: i64) -> String {
+    if timestamp <= 0 {
+        return "--".to_string();
+    }
+    let timezone =
+        chrono::FixedOffset::east_opt(8 * 60 * 60).expect("UTC+8 display offset must be valid");
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|value| {
+            value
+                .with_timezone(&timezone)
+                .format("%H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
 pub fn window_label(window: i64) -> &'static str {
     match window {
         60 => "近1分钟",
@@ -306,8 +312,6 @@ pub fn window_label(window: i64) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::metrics::{GroupReport, MetricValues, ModelReport, WindowSnapshot};
 
@@ -419,20 +423,18 @@ mod tests {
                 },
             ],
         };
-        let cache = ReportCache {
-            windows: HashMap::from([(900, snapshot)]),
-            ..ReportCache::default()
-        };
         let health = CollectorHealth {
-            last_success_at: 1_700_000_000,
+            last_success_at: 1_699_999_990,
             ..CollectorHealth::default()
         };
-        let report = format_status(&config, &cache, &health, 900, None)
+        let report = format_status(&config, &snapshot, &health, None)
             .unwrap()
             .join("\n");
         assert!(report.contains("📊 模型状态"));
-        assert!(report.contains("采集 ✅正常"));
+        assert!(report.contains("🕒 11-15 06:13:20 - 06:13:10｜采集 ✅正常"));
         assert!(report.contains("✅ Echo｜正常\n\n✅ Empty｜正常"));
+        assert!(!report.contains("查询"));
+        assert!(!report.contains("数据截至"));
         assert!(!report.contains("白名单"));
         assert!(!report.contains("请求"));
         assert!(!report.contains("暂无分组样本"));
@@ -449,27 +451,21 @@ mod tests {
     fn error_report_includes_aggregated_retry_chain() {
         let config =
             AppConfig::parse(r#"{"api":{"admin_user_id":3},"models":[{"name":"echo"}]}"#).unwrap();
-        let cache = ReportCache {
-            windows: HashMap::from([(
-                900,
-                WindowSnapshot {
-                    window_seconds: 900,
-                    models: vec![ModelReport {
-                        model_name: "echo".to_string(),
-                        display_name: "echo".to_string(),
-                        status: HealthStatus::Degraded,
-                        overall: MetricValues {
-                            retry_channel_chains: vec![("12->34".to_string(), 2)],
-                            ..MetricValues::default()
-                        },
-                        groups: Vec::new(),
-                    }],
-                    ..WindowSnapshot::default()
+        let snapshot = WindowSnapshot {
+            window_seconds: 900,
+            models: vec![ModelReport {
+                model_name: "echo".to_string(),
+                display_name: "echo".to_string(),
+                status: HealthStatus::Degraded,
+                overall: MetricValues {
+                    retry_channel_chains: vec![("12->34".to_string(), 2)],
+                    ..MetricValues::default()
                 },
-            )]),
-            ..ReportCache::default()
+                groups: Vec::new(),
+            }],
+            ..WindowSnapshot::default()
         };
-        let chunks = format_errors(&config, &cache, 900, None).unwrap();
+        let chunks = format_errors(&config, &snapshot, None).unwrap();
         assert!(chunks.join("\n").contains("重试链 12->34: 2 次"));
     }
 }

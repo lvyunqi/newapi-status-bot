@@ -6,8 +6,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::api::PerfMetricData;
 use crate::config::AppConfig;
-use crate::metrics::WindowSnapshot;
-use crate::repository::DatabaseStats;
 
 static GLOBAL_STATE: OnceLock<Mutex<Option<Arc<AppState>>>> = OnceLock::new();
 
@@ -19,13 +17,6 @@ pub struct CollectorHealth {
     pub last_success_at: i64,
     pub consecutive_failures: u32,
     pub last_error: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ReportCache {
-    pub generated_at: i64,
-    pub windows: HashMap<i64, WindowSnapshot>,
-    pub database: DatabaseStats,
 }
 
 #[derive(Debug, Default)]
@@ -96,7 +87,6 @@ pub struct AppState {
     pub config: AppConfig,
     pub database_path: PathBuf,
     pub health: RwLock<CollectorHealth>,
-    pub reports: RwLock<ReportCache>,
     pub control: Arc<WorkerControl>,
     pub push: Mutex<PushState>,
     pub perf_cache: Mutex<HashMap<(String, u32), PerfCacheEntry>>,
@@ -112,7 +102,6 @@ impl AppState {
                 started_at: unix_now(),
                 ..CollectorHealth::default()
             }),
-            reports: RwLock::new(ReportCache::default()),
             control: Arc::new(WorkerControl::default()),
             push: Mutex::new(PushState::default()),
             perf_cache: Mutex::new(HashMap::new()),
