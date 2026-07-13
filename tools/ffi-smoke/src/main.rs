@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use abi_stable::std_types::RString;
 use abi_stable_host_api::{
-    HOST_API_V1_ABI_VERSION, HostApiV1, PluginDescriptor, PluginInitConfig, PluginInitResult,
-    ProactiveSendRequest, SendEnqueueStatus,
+    HOST_API_V1_ABI_VERSION, HostApiV1, PROACTIVE_BOT_ACCOUNT_SELECTOR_PREFIX, PluginDescriptor,
+    PluginInitConfig, PluginInitResult, ProactiveSendRequest, SendEnqueueStatus,
 };
 use libloading::Library;
 use serde_json::json;
@@ -19,7 +19,9 @@ struct Record {
     bot_id: String,
     target_kind: String,
     target_id: String,
+    context_json: String,
     message: String,
+    segments_json: String,
 }
 
 unsafe extern "C" fn enqueue(context: *mut c_void, request: *const ProactiveSendRequest) -> i32 {
@@ -34,7 +36,9 @@ unsafe extern "C" fn enqueue(context: *mut c_void, request: *const ProactiveSend
         bot_id: request.bot_id.as_str().to_owned(),
         target_kind: request.target_kind.as_str().to_owned(),
         target_id: request.target_id.as_str().to_owned(),
+        context_json: request.context_json.as_str().to_owned(),
         message: request.message.as_str().to_owned(),
+        segments_json: request.segments_json.as_str().to_owned(),
     });
     SendEnqueueStatus::Accepted.code()
 }
@@ -43,7 +47,7 @@ fn main() {
     // Verify descriptor ABI before lifecycle calls.
     std::panic::set_hook(Box::new(|info| {
         eprintln!(
-            "::error title=Linux FFI smoke panic::{}",
+            "::error title=FFI smoke panic::{}",
             escape_workflow_command(&info.to_string())
         );
     }));
@@ -143,10 +147,19 @@ fn main() {
                 "collector did not proactively enqueue a report"
             );
             assert!(captured.iter().all(|record| {
-                record.bot_id == "bot-a"
-                    && record.target_kind == "group"
+                record.bot_id == format!("{PROACTIVE_BOT_ACCOUNT_SELECTOR_PREFIX}2733944636")
+                    && (record.message.contains("模型状态")
+                        || record.segments_json.contains("模型状态"))
+            }));
+            assert!(captured.iter().any(|record| {
+                record.target_kind == "group"
                     && record.target_id == "10001"
-                    && record.message.contains("模型状态")
+                    && record.context_json == "{}"
+            }));
+            assert!(captured.iter().any(|record| {
+                record.target_kind == "channel"
+                    && record.target_id == "channel-1"
+                    && record.context_json == r#"{"guild_id":"guild-1"}"#
             }));
             let accepted_count = captured.len();
             drop(captured);
@@ -168,7 +181,7 @@ fn main() {
 
     server.join().expect("mock New API server");
     report_mapping_state(&canonical_library);
-    println!("Linux FFI load, proactive send, shutdown, unbind, and loader close verified");
+    println!("FFI load, proactive send, shutdown, unbind, and loader close verified");
 }
 
 fn smoke_config(base_url: &str) -> String {
@@ -207,11 +220,19 @@ fn smoke_config(base_url: &str) -> String {
             "interval_secs": 30,
             "confirmations": 1,
             "cooldown_secs": 0,
-            "targets": [{
-                "bot_id": "bot-a",
-                "kind": "group",
-                "target_id": "10001"
-            }]
+            "targets": [
+                {
+                    "account_id": "2733944636",
+                    "kind": "group",
+                    "target_id": "10001"
+                },
+                {
+                    "account_id": "2733944636",
+                    "kind": "channel",
+                    "target_id": "channel-1",
+                    "guild_id": "guild-1"
+                }
+            ]
         },
         "models": [{"name": "echo", "groups": ["default"]}]
     })
@@ -278,6 +299,7 @@ fn read_http_request(stream: &mut impl Read) -> String {
     String::from_utf8(request).expect("mock request UTF-8")
 }
 
+#[cfg(target_os = "linux")]
 fn report_mapping_state(library_path: &Path) {
     let maps = std::fs::read_to_string("/proc/self/maps").expect("read process maps");
     let path = library_path.to_str().expect("library path UTF-8");
@@ -288,6 +310,9 @@ fn report_mapping_state(library_path: &Path) {
         );
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+fn report_mapping_state(_library_path: &Path) {}
 
 fn unix_now() -> i64 {
     SystemTime::now()

@@ -112,7 +112,7 @@ max_message_chars = 1800
 
 [push]
 # 是否启用采集线程实时主动推送。
-# 启用后必须通过一个或多个 [[push.targets]] 显式指定 bot_id、目标类型和目标 ID。
+# 启用后必须通过一个或多个 [[push.targets]] 显式指定 account_id（或 bot_id）、目标类型和目标 ID。
 # 如果未配置目标，插件会记录“推送未配置”，不会回退到旧 target_group_ids。
 enabled = false
 
@@ -132,22 +132,25 @@ confirmations = 2
 # change/anomaly 模式两次推送之间的冷却时间，单位秒。
 cooldown_secs = 900
 
-# 实时推送目标。bot_id 必须是 QimenBot config/base.toml 中的机器人实例 ID。
+# 实时推送目标。推荐使用 account_id，OneBot 通常填写 Bot QQ / self_id；
+# 该值必须同时配置在 QimenBot config/base.toml 的 [[bots]].account_id 中。
+# 需要锁定某个部署实例或传输方式时，可以改用 [[bots]].id 对应的 bot_id。
+# 每个目标必须且只能设置 account_id、bot_id 其中一个。
 # kind 可选 private、group、channel、channel_private。
 # OneBot 11 频道/频道私信通常需要额外 guild_id；QQ 官方频道可按实际接口保留或省略。
 #
 # [[push.targets]]
-# bot_id = "qq-reverse"
+# account_id = "2733944636"
 # kind = "group"
 # target_id = "123456789"
 #
 # [[push.targets]]
-# bot_id = "qq-main"
+# account_id = "2733944636"
 # kind = "private"
 # target_id = "10001"
 #
 # [[push.targets]]
-# bot_id = "qq-reverse"
+# account_id = "2733944636"
 # kind = "channel"
 # target_id = "channel_id"
 # guild_id = "guild_id"
