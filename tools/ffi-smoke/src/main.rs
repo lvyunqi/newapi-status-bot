@@ -40,6 +40,13 @@ unsafe extern "C" fn enqueue(context: *mut c_void, request: *const ProactiveSend
 }
 
 fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        eprintln!(
+            "::error title=Linux FFI smoke panic::{}",
+            escape_workflow_command(&info.to_string())
+        );
+    }));
+
     let library_path = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -195,9 +202,7 @@ fn spawn_mock_newapi(created_at: i64) -> (String, thread::JoinHandle<()>) {
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("set read timeout");
-            let mut request = [0_u8; 8192];
-            let count = stream.read(&mut request).expect("read mock request");
-            let request = String::from_utf8_lossy(&request[..count]).to_ascii_lowercase();
+            let request = read_http_request(&mut stream).to_ascii_lowercase();
             assert!(request.contains("get /api/log/?"));
             assert!(request.contains("model_name=echo"));
             let body = json!({
@@ -231,6 +236,23 @@ fn spawn_mock_newapi(created_at: i64) -> (String, thread::JoinHandle<()>) {
     (format!("http://{address}"), handle)
 }
 
+fn read_http_request(stream: &mut impl Read) -> String {
+    let mut request = Vec::with_capacity(4096);
+    let mut chunk = [0_u8; 1024];
+    loop {
+        let count = stream.read(&mut chunk).expect("read mock request");
+        if count == 0 {
+            break;
+        }
+        request.extend_from_slice(&chunk[..count]);
+        assert!(request.len() <= 64 * 1024, "mock request headers too large");
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(request).expect("mock request UTF-8")
+}
+
 fn assert_library_unmapped(library_path: &Path) {
     let maps = std::fs::read_to_string("/proc/self/maps").expect("read process maps");
     let path = library_path.to_str().expect("library path UTF-8");
@@ -242,4 +264,11 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn escape_workflow_command(message: &str) -> String {
+    message
+        .replace('%', "%25")
+        .replace('\r', "%0D")
+        .replace('\n', "%0A")
 }
