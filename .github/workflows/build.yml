@@ -74,6 +74,12 @@ jobs:
       - name: Build release plugin
         run: cargo build --release --locked
 
+      - name: Smoke test Linux FFI lifecycle and proactive send
+        if: matrix.os == 'ubuntu-22.04'
+        run: >-
+          cargo run --manifest-path tools/ffi-smoke/Cargo.toml --release --locked --
+          target/release/libqimen_dynamic_plugin_newapi_status.so
+
       - name: Upload plugin
         uses: actions/upload-artifact@v4
         with:
