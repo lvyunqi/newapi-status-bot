@@ -26,7 +26,10 @@ pub fn run(state: Arc<AppState>) {
         let cycle_result = collect_cycle(&state, &mut repository, now);
         let cycle_ok = cycle_result.is_ok();
         match cycle_result {
-            Ok(()) => update_success(&state, now),
+            Ok(()) => {
+                update_success(&state, now);
+                crate::push::maybe_push(&state, now);
+            }
             Err(error) => update_failure(&state, error),
         }
 

@@ -77,14 +77,14 @@ impl AppConfig {
         if self.bot.max_message_chars < 200 {
             return Err("bot.max_message_chars 不能小于 200".to_string());
         }
-        if self.push.enabled && self.push.target_group_ids.is_empty() {
-            return Err("启用推送时 push.target_group_ids 不能为空".to_string());
-        }
         if self.push.enabled && self.push.interval_secs < 30 {
             return Err("push.interval_secs 不能小于 30 秒".to_string());
         }
         if !matches!(self.push.mode.as_str(), "periodic" | "change" | "anomaly") {
             return Err("push.mode 只能是 periodic、change 或 anomaly".to_string());
+        }
+        for target in &self.push.targets {
+            target.validate()?;
         }
         if self.models.is_empty() {
             return Err("models 至少需要配置一个白名单模型".to_string());
@@ -253,8 +253,7 @@ pub struct PushConfig {
     pub enabled: bool,
     pub mode: String,
     pub interval_secs: i64,
-    pub target_group_ids: Vec<String>,
-    pub sender_self_id: String,
+    pub targets: Vec<PushTarget>,
     pub confirmations: u32,
     pub cooldown_secs: i64,
 }
@@ -265,11 +264,47 @@ impl Default for PushConfig {
             enabled: false,
             mode: "change".to_string(),
             interval_secs: 3600,
-            target_group_ids: Vec::new(),
-            sender_self_id: String::new(),
+            targets: Vec::new(),
             confirmations: 2,
             cooldown_secs: 900,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PushTarget {
+    pub bot_id: String,
+    pub kind: String,
+    pub target_id: String,
+    pub guild_id: Option<String>,
+}
+
+impl PushTarget {
+    /// 校验主动推送目标，避免后台线程向宿主提交不可路由的请求。
+    fn validate(&self) -> Result<(), String> {
+        if self.bot_id.trim().is_empty() {
+            return Err("push.targets[].bot_id 不能为空".to_string());
+        }
+        if self.target_id.trim().is_empty() {
+            return Err("push.targets[].target_id 不能为空".to_string());
+        }
+        if !matches!(
+            self.kind.as_str(),
+            "private" | "group" | "channel" | "channel_private"
+        ) {
+            return Err(
+                "push.targets[].kind 只能是 private、group、channel 或 channel_private".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn guild_id(&self) -> Option<&str> {
+        self.guild_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
     }
 }
 
@@ -323,5 +358,34 @@ mod tests {
             "models":[{"name":"echo"}]
         }"#;
         assert!(AppConfig::parse(raw).is_err());
+    }
+
+    #[test]
+    fn accepts_enabled_push_without_new_targets_for_migration() {
+        let raw = r#"{
+            "api":{"admin_user_id":3},
+            "push":{"enabled":true,"target_group_ids":["10001"],"sender_self_id":"bot"},
+            "models":[{"name":"echo"}]
+        }"#;
+        let config = AppConfig::parse(raw).expect("legacy push fields should be ignored");
+        assert!(config.push.enabled);
+        assert!(config.push.targets.is_empty());
+    }
+
+    #[test]
+    fn validates_proactive_push_targets() {
+        let raw = r#"{
+            "api":{"admin_user_id":3},
+            "push":{
+                "enabled":true,
+                "targets":[{"bot_id":"qq-reverse","kind":"group","target_id":"10001"}]
+            },
+            "models":[{"name":"echo"}]
+        }"#;
+        let config = AppConfig::parse(raw).expect("target should be valid");
+        assert_eq!(config.push.targets[0].bot_id, "qq-reverse");
+
+        let invalid = raw.replace("\"group\"", "\"guild\"");
+        assert!(AppConfig::parse(&invalid).is_err());
     }
 }

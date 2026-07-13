@@ -111,8 +111,9 @@ admin_user_ids = []
 max_message_chars = 1800
 
 [push]
-# 是否启用 Heartbeat 驱动的群状态推送。
-# 启用后 target_group_ids 不能为空。
+# 是否启用采集线程实时主动推送。
+# 启用后必须通过一个或多个 [[push.targets]] 显式指定 bot_id、目标类型和目标 ID。
+# 如果未配置目标，插件会记录“推送未配置”，不会回退到旧 target_group_ids。
 enabled = false
 
 # 推送模式：
@@ -124,20 +125,38 @@ mode = "change"
 # periodic 模式的推送周期，单位秒；启用推送时不能小于 30。
 interval_secs = 3600
 
-# 推送目标 QQ 群号列表，群号使用字符串，可配置多个。
-target_group_ids = []
-# 示例：target_group_ids = ["123456789"]
-
-# 指定负责推送的 OneBot 机器人 self_id，使用字符串。
-# 空字符串表示不限制；多机器人环境建议填写，避免重复推送。
-sender_self_id = ""
-
-# 同一候选状态需要连续命中的 Heartbeat 次数，最小有效值为 1。
+# 同一候选状态需要连续采集命中的次数，最小有效值为 1。
 # 告警和恢复都使用该确认次数，避免瞬时波动触发通知。
 confirmations = 2
 
 # change/anomaly 模式两次推送之间的冷却时间，单位秒。
 cooldown_secs = 900
+
+# 实时推送目标。bot_id 必须是 QimenBot config/base.toml 中的机器人实例 ID。
+# kind 可选 private、group、channel、channel_private。
+# OneBot 11 频道/频道私信通常需要额外 guild_id；QQ 官方频道可按实际接口保留或省略。
+#
+# [[push.targets]]
+# bot_id = "qq-reverse"
+# kind = "group"
+# target_id = "123456789"
+#
+# [[push.targets]]
+# bot_id = "qq-main"
+# kind = "private"
+# target_id = "10001"
+#
+# [[push.targets]]
+# bot_id = "qq-reverse"
+# kind = "channel"
+# target_id = "channel_id"
+# guild_id = "guild_id"
+#
+# [[push.targets]]
+# bot_id = "qq-official"
+# kind = "channel_private"
+# target_id = "guild_or_user_id"
+# guild_id = "optional_onebot_guild_id"
 
 # 模型白名单。至少配置一个 [[models]]，name 不能重复。
 # 插件会逐个模型调用日志接口的 model_name 过滤，不会抓取全站日志。

@@ -3,6 +3,7 @@ mod collector;
 mod config;
 mod domain;
 mod metrics;
+mod push;
 mod report;
 mod repository;
 mod state;
@@ -19,7 +20,7 @@ use qimen_dynamic_plugin_derive::dynamic_plugin;
 use crate::config::AppConfig;
 use crate::state::AppState;
 
-#[dynamic_plugin(id = "newapi-status-bot", version = "0.1.0")]
+#[dynamic_plugin(id = "newapi-status-bot", version = "0.1.0", api = "0.4")]
 mod plugin {
     use super::*;
 
@@ -166,11 +167,18 @@ mod plugin {
             .lock()
             .map(|push| push.last_heartbeat_at)
             .unwrap_or_default();
+        let last_push_at = state
+            .push
+            .lock()
+            .map(|push| push.last_push_at)
+            .unwrap_or_default();
         CommandResponse::text(&crate::report::format_health(
             &cache,
             &health,
             &state.database_path.display().to_string(),
             state.config.push.enabled,
+            !state.config.push.targets.is_empty(),
+            last_push_at,
             last_heartbeat_at,
         ))
     }
@@ -196,7 +204,7 @@ mod plugin {
     #[route(kind = "meta", events = "Heartbeat")]
     fn heartbeat(request: &NoticeRequest) -> NoticeResponse {
         if let Some(state) = crate::state::current() {
-            handle_heartbeat(&state, request);
+            crate::push::record_heartbeat(&state, request);
         }
         NoticeResponse {
             action: DynamicActionResponse::ignore(),
@@ -214,6 +222,7 @@ fn initialize(init: PluginInitConfig) -> Result<(), String> {
     let database_path = config.database_path(&data_dir);
     crate::repository::Repository::open(&database_path)?;
     let state = AppState::new(config, database_path);
+    crate::push::log_missing_targets_on_init(&state);
     state.start_worker()?;
     if let Err(error) = crate::state::install(state.clone()) {
         state.shutdown();
@@ -337,116 +346,6 @@ fn respond_chunks(request: &CommandRequest, chunks: Vec<String>) -> CommandRespo
     CommandResponse::ignore()
 }
 
-fn handle_heartbeat(state: &Arc<AppState>, request: &NoticeRequest) {
-    let config = &state.config.push;
-    if !config.enabled {
-        return;
-    }
-    let now = crate::state::unix_now();
-    let raw: serde_json::Value =
-        serde_json::from_str(request.raw_event_json.as_str()).unwrap_or_default();
-    let self_id = raw
-        .get("self_id")
-        .and_then(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| value.as_i64().map(|id| id.to_string()))
-        })
-        .unwrap_or_default();
-    if !config.sender_self_id.is_empty() && config.sender_self_id != self_id {
-        return;
-    }
-    let reports = state
-        .reports
-        .read()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let health = state
-        .health
-        .read()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_default();
-    let Ok(default_window) = crate::config::parse_window(&state.config.status.default_window)
-    else {
-        return;
-    };
-    let Some(snapshot) = reports.windows.get(&default_window) else {
-        return;
-    };
-    let fingerprint = snapshot
-        .models
-        .iter()
-        .map(|model| format!("{}:{:?}", model.model_name, model.status))
-        .collect::<Vec<_>>()
-        .join("|");
-    let has_alert = snapshot.models.iter().any(|model| {
-        matches!(
-            model.status,
-            crate::metrics::HealthStatus::Stale
-                | crate::metrics::HealthStatus::Degraded
-                | crate::metrics::HealthStatus::Abnormal
-        )
-    });
-
-    let should_send = {
-        let Ok(mut push) = state.push.lock() else {
-            return;
-        };
-        push.last_heartbeat_at = now;
-        should_send_push(&mut push, config, &fingerprint, has_alert, now)
-    };
-    if !should_send {
-        return;
-    }
-    let Ok(chunks) =
-        crate::report::format_status(&state.config, &reports, &health, default_window, None)
-    else {
-        return;
-    };
-    for group in &config.target_group_ids {
-        for chunk in &chunks {
-            BotApi::send_group_msg(group, chunk);
-        }
-    }
-    if let Ok(mut push) = state.push.lock() {
-        push.last_push_at = now;
-        push.last_sent_fingerprint = fingerprint;
-        push.last_sent_had_alert = has_alert;
-        push.candidate_count = 0;
-    }
-}
-
-/// 更新推送确认状态；网络发送只在调用方判定为 true 后发生。
-fn should_send_push(
-    push: &mut crate::state::PushState,
-    config: &crate::config::PushConfig,
-    fingerprint: &str,
-    has_alert: bool,
-    now: i64,
-) -> bool {
-    if config.mode == "periodic" {
-        return now - push.last_push_at >= config.interval_secs;
-    }
-    if push.last_sent_fingerprint.is_empty() && config.mode == "change" {
-        push.last_sent_fingerprint = fingerprint.to_string();
-        push.last_sent_had_alert = has_alert;
-        return false;
-    }
-    if push.candidate_fingerprint == fingerprint {
-        push.candidate_count = push.candidate_count.saturating_add(1);
-    } else {
-        push.candidate_fingerprint = fingerprint.to_string();
-        push.candidate_count = 1;
-    }
-    let confirmed = push.candidate_count >= config.confirmations.max(1)
-        && now - push.last_push_at >= config.cooldown_secs;
-    let changed = fingerprint != push.last_sent_fingerprint;
-    confirmed && changed && (config.mode == "change" || has_alert || push.last_sent_had_alert)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,7 +387,7 @@ mod tests {
         // 描述符是宿主加载 DLL 时读取的首个 ABI 契约。
         let descriptor = unsafe { qimen_plugin_descriptor() };
         assert_eq!(descriptor.plugin_id.as_str(), "newapi-status-bot");
-        assert_eq!(descriptor.api_version.as_str(), "0.3");
+        assert_eq!(descriptor.api_version.as_str(), "0.4");
         assert_eq!(descriptor.commands.len(), 5);
         for name in ["模型状态", "模型列表", "模型异常"] {
             let command = descriptor
@@ -529,19 +428,5 @@ mod tests {
         assert!(actions.iter().all(|action| {
             action.message_type.as_str() == "private" && action.target_id.as_str() == "10001"
         }));
-    }
-
-    #[test]
-    fn anomaly_mode_sends_initial_alert_after_confirmation() {
-        let mut push = crate::state::PushState::default();
-        let config = crate::config::PushConfig {
-            mode: "anomaly".to_string(),
-            confirmations: 2,
-            cooldown_secs: 0,
-            ..crate::config::PushConfig::default()
-        };
-
-        assert!(!should_send_push(&mut push, &config, "echo:bad", true, 100));
-        assert!(should_send_push(&mut push, &config, "echo:bad", true, 101));
     }
 }

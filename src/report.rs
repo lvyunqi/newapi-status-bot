@@ -110,17 +110,26 @@ pub fn format_health(
     health: &CollectorHealth,
     database_path: &str,
     push_enabled: bool,
+    targets_configured: bool,
+    last_push_at: i64,
     last_heartbeat_at: i64,
 ) -> String {
     let push_status = if !push_enabled {
         "未启用".to_string()
-    } else if last_heartbeat_at == 0 {
-        "等待 Heartbeat".to_string()
+    } else if !targets_configured {
+        "推送未配置".to_string()
+    } else if last_push_at == 0 {
+        "已配置，等待状态确认".to_string()
     } else {
-        format!("最后心跳 {}", format_timestamp(last_heartbeat_at))
+        format!("最后入队 {}", format_timestamp(last_push_at))
+    };
+    let heartbeat_status = if last_heartbeat_at == 0 {
+        "未收到".to_string()
+    } else {
+        format!("最后收到 {}", format_timestamp(last_heartbeat_at))
     };
     format!(
-        "[监控健康]\n数据库: {database_path}\n启动时间: {}\n最后尝试: {}\n最后成功: {}\n连续失败: {}\n日志样本: {}\n请求结果: {}\n推送: {push_status}\n状态: {}",
+        "[监控健康]\n数据库: {database_path}\n启动时间: {}\n最后尝试: {}\n最后成功: {}\n连续失败: {}\n日志样本: {}\n请求结果: {}\n推送: {push_status}\n心跳: {heartbeat_status}\n状态: {}",
         format_timestamp(health.started_at),
         format_timestamp(health.last_attempt_at),
         format_timestamp(health.last_success_at),

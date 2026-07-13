@@ -36,6 +36,7 @@ pub struct PushState {
     pub last_sent_had_alert: bool,
     pub candidate_fingerprint: String,
     pub candidate_count: u32,
+    pub missing_targets_logged: bool,
 }
 
 #[derive(Debug, Clone)]

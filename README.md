@@ -4,7 +4,7 @@
 
 基于 [QimenBot](https://github.com/lvyunqi/QimenBot) 开发的 New API 模型状态监控动态插件。
 
-插件以 QimenBot ABI 0.3 动态插件形式编译为 `cdylib`，可通过 `/plugins reload` 热重载，
+插件以 QimenBot ABI 0.4 动态插件形式编译为 `cdylib`，可通过 `/plugins reload` 热重载，
 不需要修改 QimenBot 框架源码，也不需要加入 QimenBot 根 Cargo workspace。
 
 ## 功能
@@ -16,15 +16,15 @@
 - 根据 `request_id` 合并失败尝试和最终消费日志，区分最终失败与重试成功。
 - 解析并聚合 `other.admin_info.use_channel` 重试渠道链。
 - 使用 SQLite 保存最近 7 天历史，支持去重、游标恢复和版本迁移。
-- 提供 QQ 群查询、采集健康检查、手动刷新和定时状态推送。
+- 提供 QQ 群/私聊查询、采集健康检查、手动刷新和多 Bot 实时主动推送。
 - 单模型查询可附带模型广场 `perf-metrics` 数据，并与本地日志指标分开显示。
 
 ## 运行要求
 
-- QimenBot 动态插件 API 0.3。
+- QimenBot v0.1.10 或更高版本，动态插件 API 0.4。
 - Rust 1.89 或更高版本，Edition 2024。
 - New API 管理员 UID 和管理访问令牌。
-- 推送功能需要 OneBot 实现端发送 `meta/Heartbeat` 事件。
+- 推送功能通过 QimenBot Host API v1 实时入队，不依赖 OneBot `meta/Heartbeat` 事件。
 
 ## 构建
 
@@ -96,7 +96,7 @@ max_total_ms = 30000
 | `[status]` | 样本数、成功率、TTFT、总耗时和过期阈值 |
 | `[perf_metrics]` | 模型广场补充查询与缓存 |
 | `[bot]` | 可查询群和管理员 QQ 白名单 |
-| `[push]` | 推送模式、目标群、发送机器人和冷却时间 |
+| `[push]` | 推送模式、显式 Bot 目标、确认次数和冷却时间 |
 
 ## 命令
 
@@ -105,7 +105,7 @@ max_total_ms = 30000
 | `/模型状态 [1m\|5m\|10m\|15m\|1h\|24h\|7d] [模型名]` | 查看白名单模型及分组状态 |
 | `/模型列表` | 查看模型白名单、别名和配置分组 |
 | `/模型异常 [模型名] [1m\|5m\|10m\|15m\|1h\|24h\|7d]` | 查看脱敏错误分类和高频重试链 |
-| `/监控健康` | 管理员查看采集器、数据库和推送心跳 |
+| `/监控健康` | 管理员查看采集器、数据库、推送状态和心跳观测 |
 | `/监控刷新` | 管理员立即唤醒后台采集线程 |
 
 普通查询同时支持群聊和私聊：群聊受 `bot.allowed_group_ids` 限制，私聊受
@@ -121,7 +121,39 @@ max_total_ms = 30000
 | `anomaly` | 异常或数据过期确认后发送，并在恢复时通知 |
 
 状态变化需要连续命中配置次数后才会发送，且受冷却时间和报告指纹去重保护。
-多机器人环境应设置 `push.sender_self_id`，避免同一 Heartbeat 被多个机器人重复推送。
+推送由采集线程在状态快照生成后直接调用 Host API 入队；返回值表示“宿主已接受入队”，
+不代表网络侧最终送达。每个目标都必须显式配置 `bot_id`，不会使用最近事件 Bot、默认 Bot
+或旧版 `target_group_ids`。
+
+目标配置示例：
+
+```toml
+[push]
+enabled = true
+mode = "change"
+confirmations = 2
+cooldown_secs = 900
+
+[[push.targets]]
+bot_id = "qq-reverse"
+kind = "group"
+target_id = "123456789"
+
+[[push.targets]]
+bot_id = "qq-main"
+kind = "private"
+target_id = "10001"
+
+[[push.targets]]
+bot_id = "qq-reverse"
+kind = "channel"
+target_id = "channel_id"
+guild_id = "guild_id"
+```
+
+`kind` 支持 `private`、`group`、`channel`、`channel_private`。OneBot 11 频道类目标通常
+需要 `guild_id`；QQ 官方频道目标可按实际 OpenAPI 路由填写。Heartbeat 仍会在 `/监控健康`
+中显示为健康观测，但不会触发推送。
 
 ## 指标口径
 
@@ -155,7 +187,8 @@ New API 每次失败渠道尝试会产生一条错误日志，最终成功时还
 - 鉴权失败：确认使用管理访问令牌、管理员 UID 正确，且令牌位于 QimenBot 进程环境。
 - 模型没有样本：确认 `[[models]].name` 与日志 `model_name` 完全一致。
 - 数据持续过期：检查管理日志接口、网络代理和采集器错误分类。
-- 推送等待 Heartbeat：确认 OneBot 实现端发送元事件，并检查 `push.sender_self_id`。
+- 推送显示未配置：添加至少一个 `[[push.targets]]`，并明确填写 `bot_id`、`kind` 和 `target_id`。
+- 推送未到达：确认 QimenBot 版本不低于 0.1.10、目标 Bot 已启用并在线，检查日志中的 `BotNotFound`、`BotDisabled`、`QueueFull` 或 `HostUnavailable` 状态。
 - 动态库无法加载：确认 QimenBot 与插件的操作系统、CPU 架构和 ABI 版本一致。
 
 ## 验证
