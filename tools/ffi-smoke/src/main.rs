@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use abi_stable::std_types::RString;
 use abi_stable_host_api::{
-    HOST_API_V1_ABI_VERSION, HostApiV1, PluginInitConfig, PluginInitResult, ProactiveSendRequest,
-    SendEnqueueStatus,
+    HOST_API_V1_ABI_VERSION, HostApiV1, PluginDescriptor, PluginInitConfig, PluginInitResult,
+    ProactiveSendRequest, SendEnqueueStatus,
 };
 use libloading::Library;
 use serde_json::json;
@@ -40,6 +40,7 @@ unsafe extern "C" fn enqueue(context: *mut c_void, request: *const ProactiveSend
 }
 
 fn main() {
+    // Verify descriptor ABI before lifecycle calls.
     std::panic::set_hook(Box::new(|info| {
         eprintln!(
             "::error title=Linux FFI smoke panic::{}",
@@ -77,6 +78,23 @@ fn main() {
     unsafe {
         let library = Library::new(&canonical_library).expect("load plugin");
         {
+            let descriptor = library
+                .get::<unsafe extern "C" fn() -> PluginDescriptor>(b"qimen_plugin_descriptor")
+                .expect("descriptor symbol")();
+            assert_eq!(descriptor.plugin_id.as_str(), "newapi-status-bot");
+            assert_eq!(descriptor.api_version.as_str(), "0.4");
+            assert_eq!(
+                descriptor.commands.len(),
+                5,
+                "dynamic descriptor commands were lost across the library boundary"
+            );
+            assert!(
+                descriptor.routes.iter().any(|route| {
+                    route.kind.as_str() == "meta" && route.route.as_str() == "Heartbeat"
+                }),
+                "dynamic descriptor is missing the Heartbeat route"
+            );
+
             let bind = library
                 .get::<unsafe extern "C" fn(*const HostApiV1) -> i32>(
                     b"qimen_plugin_bind_host_api_v1",

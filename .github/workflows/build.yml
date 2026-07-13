@@ -74,10 +74,14 @@ jobs:
       - name: Build release plugin
         run: cargo build --release --locked
 
+      - name: Install current stable host toolchain
+        if: matrix.os == 'ubuntu-22.04'
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Smoke test Linux FFI lifecycle and proactive send
         if: matrix.os == 'ubuntu-22.04'
         run: >-
-          cargo run --manifest-path tools/ffi-smoke/Cargo.toml --release --locked --
+          cargo +stable run --manifest-path tools/ffi-smoke/Cargo.toml --release --locked --
           target/release/libqimen_dynamic_plugin_newapi_status.so
 
       - name: Upload plugin
