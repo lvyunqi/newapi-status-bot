@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use abi_stable_host_api::{BotApi, NoticeRequest, SendBuilder, SendEnqueueStatus};
 
-use crate::config::{PushConfig, PushTarget};
+use crate::config::{PushBotSelector, PushConfig, PushTarget};
 use crate::metrics::{HealthStatus, WindowSnapshot};
 use crate::state::{AppState, PushState};
 
@@ -36,22 +36,25 @@ pub fn maybe_push(state: &Arc<AppState>, now: i64) {
     else {
         return;
     };
-    let reports = state
-        .reports
-        .read()
-        .ok()
-        .map(|value| value.clone())
-        .unwrap_or_default();
+    let snapshot = match crate::query::load_window_snapshot(
+        &state.config,
+        &state.database_path,
+        default_window,
+        now,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("[newapi-status-bot] load push snapshot failed: {error}");
+            return;
+        }
+    };
     let health = state
         .health
         .read()
         .ok()
         .map(|value| value.clone())
         .unwrap_or_default();
-    let Some(snapshot) = reports.windows.get(&default_window) else {
-        return;
-    };
-    let (fingerprint, has_alert) = snapshot_signal(snapshot);
+    let (fingerprint, has_alert) = snapshot_signal(&snapshot);
     let should_send = {
         let Ok(mut push) = state.push.lock() else {
             return;
@@ -62,16 +65,14 @@ pub fn maybe_push(state: &Arc<AppState>, now: i64) {
         return;
     }
 
-    let Ok(chunks) =
-        crate::report::format_status(&state.config, &reports, &health, default_window, None)
-    else {
+    let Ok(chunks) = crate::report::format_status(&state.config, &snapshot, &health, None) else {
         return;
     };
     let attempts = enqueue_chunks_with(&config.targets, &chunks, send_text_to_target);
     for attempt in &attempts {
         eprintln!(
-            "[newapi-status-bot] proactive push enqueue bot_id={} kind={} target_id={} status={:?}",
-            attempt.bot_id, attempt.kind, attempt.target_id, attempt.status
+            "[newapi-status-bot] proactive push enqueue bot={} kind={} target_id={} status={:?}",
+            attempt.bot, attempt.kind, attempt.target_id, attempt.status
         );
     }
 
@@ -92,7 +93,7 @@ fn log_missing_targets_once(state: &Arc<AppState>) {
     {
         push.missing_targets_logged = true;
         eprintln!(
-            "[newapi-status-bot] 推送未配置: 请使用 [[push.targets]] 显式设置 bot_id/kind/target_id"
+            "[newapi-status-bot] 推送未配置: 请使用 [[push.targets]] 显式设置 account_id（或 bot_id）、kind 和 target_id"
         );
     }
 }
@@ -143,7 +144,7 @@ fn should_send_push(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PushAttempt {
-    bot_id: String,
+    bot: String,
     kind: String,
     target_id: String,
     status: SendEnqueueStatus,
@@ -159,7 +160,7 @@ fn enqueue_chunks_with(
         for chunk in chunks {
             let status = send(target, chunk);
             attempts.push(PushAttempt {
-                bot_id: target.bot_id.clone(),
+                bot: describe_bot_selector(target),
                 kind: target.kind.clone(),
                 target_id: target.target_id.clone(),
                 status,
@@ -188,22 +189,53 @@ fn commit_if_any_accepted(
 }
 
 fn send_text_to_target(target: &PushTarget, message: &str) -> SendEnqueueStatus {
+    let Some(selector) = target.bot_selector() else {
+        return SendEnqueueStatus::InvalidRequest;
+    };
     match target.kind.as_str() {
-        "private" => BotApi::for_bot(&target.bot_id).send_private_msg(&target.target_id, message),
-        "group" => BotApi::for_bot(&target.bot_id).send_group_msg(&target.target_id, message),
+        "private" => match selector {
+            PushBotSelector::AccountId(account_id) => {
+                BotApi::for_account(account_id).send_private_msg(&target.target_id, message)
+            }
+            PushBotSelector::BotId(bot_id) => {
+                BotApi::for_bot(bot_id).send_private_msg(&target.target_id, message)
+            }
+        },
+        "group" => match selector {
+            PushBotSelector::AccountId(account_id) => {
+                BotApi::for_account(account_id).send_group_msg(&target.target_id, message)
+            }
+            PushBotSelector::BotId(bot_id) => {
+                BotApi::for_bot(bot_id).send_group_msg(&target.target_id, message)
+            }
+        },
         "channel" => {
-            let builder = SendBuilder::channel(&target.target_id)
-                .bot(&target.bot_id)
-                .text(message);
+            let builder =
+                select_builder_bot(SendBuilder::channel(&target.target_id), selector).text(message);
             send_builder_with_optional_guild(builder, target)
         }
         "channel_private" => {
-            let builder = SendBuilder::channel_private(&target.target_id)
-                .bot(&target.bot_id)
-                .text(message);
+            let builder =
+                select_builder_bot(SendBuilder::channel_private(&target.target_id), selector)
+                    .text(message);
             send_builder_with_optional_guild(builder, target)
         }
         _ => SendEnqueueStatus::InvalidRequest,
+    }
+}
+
+fn select_builder_bot(builder: SendBuilder, selector: PushBotSelector<'_>) -> SendBuilder {
+    match selector {
+        PushBotSelector::AccountId(account_id) => builder.bot_account(account_id),
+        PushBotSelector::BotId(bot_id) => builder.bot(bot_id),
+    }
+}
+
+fn describe_bot_selector(target: &PushTarget) -> String {
+    match target.bot_selector() {
+        Some(PushBotSelector::AccountId(account_id)) => format!("account_id={account_id}"),
+        Some(PushBotSelector::BotId(bot_id)) => format!("bot_id={bot_id}"),
+        None => "unconfigured".to_string(),
     }
 }
 
@@ -223,10 +255,10 @@ mod tests {
 
     fn target(kind: &str, id: &str) -> PushTarget {
         PushTarget {
-            bot_id: "qq-reverse".to_string(),
+            account_id: "2733944636".to_string(),
             kind: kind.to_string(),
             target_id: id.to_string(),
-            guild_id: None,
+            ..PushTarget::default()
         }
     }
 
@@ -250,7 +282,7 @@ mod tests {
         let chunks = vec!["first".to_string(), "second".to_string()];
 
         let attempts = enqueue_chunks_with(&targets, &chunks, |target, message| {
-            assert!(!target.bot_id.is_empty());
+            assert!(target.bot_selector().is_some());
             assert!(!message.is_empty());
             SendEnqueueStatus::Accepted
         });
@@ -262,7 +294,7 @@ mod tests {
     #[test]
     fn accepted_attempt_commits_push_state() {
         let attempts = vec![PushAttempt {
-            bot_id: "qq-reverse".to_string(),
+            bot: "account_id=2733944636".to_string(),
             kind: "group".to_string(),
             target_id: "10001".to_string(),
             status: SendEnqueueStatus::Accepted,
@@ -290,7 +322,7 @@ mod tests {
     #[test]
     fn rejected_attempts_do_not_commit_push_state() {
         let attempts = vec![PushAttempt {
-            bot_id: "qq-reverse".to_string(),
+            bot: "account_id=2733944636".to_string(),
             kind: "group".to_string(),
             target_id: "10001".to_string(),
             status: SendEnqueueStatus::HostUnavailable,
@@ -318,5 +350,19 @@ mod tests {
         let status = send_text_to_target(&target, "hello");
 
         assert_eq!(status, SendEnqueueStatus::HostUnavailable);
+    }
+
+    #[test]
+    fn describes_stable_and_instance_bot_selectors() {
+        assert_eq!(
+            describe_bot_selector(&target("group", "10001")),
+            "account_id=2733944636"
+        );
+        let instance_target = PushTarget {
+            bot_id: "qq-reverse".to_string(),
+            account_id: String::new(),
+            ..target("group", "10001")
+        };
+        assert_eq!(describe_bot_selector(&instance_target), "bot_id=qq-reverse");
     }
 }

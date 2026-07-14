@@ -274,17 +274,29 @@ impl Default for PushConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct PushTarget {
+    pub account_id: String,
     pub bot_id: String,
     pub kind: String,
     pub target_id: String,
     pub guild_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushBotSelector<'a> {
+    AccountId(&'a str),
+    BotId(&'a str),
+}
+
 impl PushTarget {
     /// 校验主动推送目标，避免后台线程向宿主提交不可路由的请求。
     fn validate(&self) -> Result<(), String> {
-        if self.bot_id.trim().is_empty() {
-            return Err("push.targets[].bot_id 不能为空".to_string());
+        let account_id = non_empty(&self.account_id);
+        let bot_id = non_empty(&self.bot_id);
+        if account_id.is_none() && bot_id.is_none() {
+            return Err("push.targets[] 必须设置 account_id 或 bot_id".to_string());
+        }
+        if account_id.is_some() && bot_id.is_some() {
+            return Err("push.targets[].account_id 和 bot_id 不能同时设置".to_string());
         }
         if self.target_id.trim().is_empty() {
             return Err("push.targets[].target_id 不能为空".to_string());
@@ -300,12 +312,22 @@ impl PushTarget {
         Ok(())
     }
 
-    pub fn guild_id(&self) -> Option<&str> {
-        self.guild_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+    pub fn bot_selector(&self) -> Option<PushBotSelector<'_>> {
+        if let Some(account_id) = non_empty(&self.account_id) {
+            Some(PushBotSelector::AccountId(account_id))
+        } else {
+            non_empty(&self.bot_id).map(PushBotSelector::BotId)
+        }
     }
+
+    pub fn guild_id(&self) -> Option<&str> {
+        self.guild_id.as_deref().and_then(non_empty)
+    }
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -378,14 +400,51 @@ mod tests {
             "api":{"admin_user_id":3},
             "push":{
                 "enabled":true,
-                "targets":[{"bot_id":"qq-reverse","kind":"group","target_id":"10001"}]
+                "targets":[{"account_id":"2733944636","kind":"group","target_id":"10001"}]
             },
             "models":[{"name":"echo"}]
         }"#;
         let config = AppConfig::parse(raw).expect("target should be valid");
-        assert_eq!(config.push.targets[0].bot_id, "qq-reverse");
+        assert_eq!(config.push.targets[0].account_id, "2733944636");
 
         let invalid = raw.replace("\"group\"", "\"guild\"");
         assert!(AppConfig::parse(&invalid).is_err());
+    }
+
+    #[test]
+    fn accepts_legacy_bot_id_selector() {
+        let raw = r#"{
+            "api":{"admin_user_id":3},
+            "push":{
+                "enabled":true,
+                "targets":[{"bot_id":"qq-reverse","kind":"group","target_id":"10001"}]
+            },
+            "models":[{"name":"echo"}]
+        }"#;
+        let config = AppConfig::parse(raw).expect("bot_id selector should remain supported");
+        assert_eq!(
+            config.push.targets[0].bot_selector(),
+            Some(PushBotSelector::BotId("qq-reverse"))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_ambiguous_bot_selector() {
+        let missing = r#"{
+            "api":{"admin_user_id":3},
+            "push":{"enabled":true,"targets":[{"kind":"group","target_id":"10001"}]},
+            "models":[{"name":"echo"}]
+        }"#;
+        assert!(AppConfig::parse(missing).is_err());
+
+        let ambiguous = r#"{
+            "api":{"admin_user_id":3},
+            "push":{"enabled":true,"targets":[{
+                "account_id":"2733944636","bot_id":"qq-reverse",
+                "kind":"group","target_id":"10001"
+            }]},
+            "models":[{"name":"echo"}]
+        }"#;
+        assert!(AppConfig::parse(ambiguous).is_err());
     }
 }

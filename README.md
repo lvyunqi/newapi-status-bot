@@ -10,18 +10,19 @@
 ## 功能
 
 - 按本地模型白名单调用 New API 管理日志接口，避免抓取无关模型日志。
-- 按模型和分组统计 15 分钟、1 小时、24 小时和 7 天窗口。
+- 按模型和分组统计 1、5、10、15 分钟、1 小时、24 小时和 7 天窗口。
 - 统计请求正常率、错误率、尝试错误率、重试率和部分失败数。
 - 统计首字耗时（TTFT）和总体耗时的平均值、P50、P95。
 - 根据 `request_id` 合并失败尝试和最终消费日志，区分最终失败与重试成功。
 - 解析并聚合 `other.admin_info.use_channel` 重试渠道链。
 - 使用 SQLite 保存最近 7 天历史，支持去重、游标恢复和版本迁移。
+- 后台采集与用户查询解耦：采集器独立写入 SQLite，每次查询按命令到达时间从 SQLite 即时统计。
 - 提供 QQ 群/私聊查询、采集健康检查、手动刷新和多 Bot 实时主动推送。
 - 单模型查询可附带模型广场 `perf-metrics` 数据，并与本地日志指标分开显示。
 
 ## 运行要求
 
-- QimenBot v0.1.10 或更高版本，动态插件 API 0.4。
+- QimenBot v0.1.12 或更高版本，动态插件 API 0.4。
 - Rust 1.89 或更高版本，Edition 2024。
 - New API 管理员 UID 和管理访问令牌。
 - 推送功能通过 QimenBot Host API v1 实时入队，不依赖 OneBot `meta/Heartbeat` 事件。
@@ -121,9 +122,21 @@ max_total_ms = 30000
 | `anomaly` | 异常或数据过期确认后发送，并在恢复时通知 |
 
 状态变化需要连续命中配置次数后才会发送，且受冷却时间和报告指纹去重保护。
-推送由采集线程在状态快照生成后直接调用 Host API 入队；返回值表示“宿主已接受入队”，
-不代表网络侧最终送达。每个目标都必须显式配置 `bot_id`，不会使用最近事件 Bot、默认 Bot
-或旧版 `target_group_ids`。
+推送由采集线程在完成写入后从 SQLite 重新统计，再直接调用 Host API 入队；返回值表示“宿主已接受入队”，
+不代表网络侧最终送达。每个目标必须显式配置 `account_id` 或 `bot_id`，不会使用最近事件 Bot、默认 Bot
+或旧版 `target_group_ids`。推荐使用稳定的 `account_id`；OneBot 11/12 通常填写 Bot QQ，也就是事件中的
+`self_id`。该值必须同时配置在 QimenBot 的 `[[bots]].account_id` 中。
+
+QimenBot `config/base.toml`：
+
+```toml
+[[bots]]
+id = "qq-reverse"
+account_id = "2733944636"
+protocol = "onebot11"
+transport = "ws-reverse"
+enabled = true
+```
 
 目标配置示例：
 
@@ -135,21 +148,24 @@ confirmations = 2
 cooldown_secs = 900
 
 [[push.targets]]
-bot_id = "qq-reverse"
+account_id = "2733944636"
 kind = "group"
 target_id = "123456789"
 
 [[push.targets]]
-bot_id = "qq-main"
+account_id = "2733944636"
 kind = "private"
 target_id = "10001"
 
 [[push.targets]]
-bot_id = "qq-reverse"
+account_id = "2733944636"
 kind = "channel"
 target_id = "channel_id"
 guild_id = "guild_id"
 ```
+
+需要锁定某个部署实例或传输方式时，可将 `account_id` 替换为 `bot_id = "qq-reverse"`。
+同一目标不能同时设置 `account_id` 和 `bot_id`。
 
 `kind` 支持 `private`、`group`、`channel`、`channel_private`。OneBot 11 频道类目标通常
 需要 `guild_id`；QQ 官方频道目标可按实际 OpenAPI 路由填写。Heartbeat 仍会在 `/监控健康`
@@ -187,8 +203,9 @@ New API 每次失败渠道尝试会产生一条错误日志，最终成功时还
 - 鉴权失败：确认使用管理访问令牌、管理员 UID 正确，且令牌位于 QimenBot 进程环境。
 - 模型没有样本：确认 `[[models]].name` 与日志 `model_name` 完全一致。
 - 数据持续过期：检查管理日志接口、网络代理和采集器错误分类。
-- 推送显示未配置：添加至少一个 `[[push.targets]]`，并明确填写 `bot_id`、`kind` 和 `target_id`。
-- 推送未到达：确认 QimenBot 版本不低于 0.1.10、目标 Bot 已启用并在线，检查日志中的 `BotNotFound`、`BotDisabled`、`QueueFull` 或 `HostUnavailable` 状态。
+- 推送显示未配置：添加至少一个 `[[push.targets]]`，填写 `account_id`（或 `bot_id`）、`kind` 和 `target_id`。
+- `account_id` 返回 `BotNotFound`：确认 QimenBot `[[bots]]` 中配置了完全相同的 `account_id`，OneBot 通常填写 Bot QQ / `self_id`。
+- 推送未到达：确认 QimenBot 版本不低于 0.1.12、目标 Bot 已启用并在线，检查日志中的 `BotNotFound`、`BotDisabled`、`QueueFull` 或 `HostUnavailable` 状态。
 - 动态库无法加载：确认 QimenBot 与插件的操作系统、CPU 架构和 ABI 版本一致。
 
 ## 验证

@@ -4,6 +4,7 @@ mod config;
 mod domain;
 mod metrics;
 mod push;
+mod query;
 mod report;
 mod repository;
 mod state;
@@ -54,28 +55,30 @@ mod plugin {
             Ok(query) => query,
             Err(error) => return CommandResponse::text(&error),
         };
-        let cache = state
-            .reports
-            .read()
-            .ok()
-            .map(|value| value.clone())
-            .unwrap_or_default();
+        let query_at = crate::state::unix_now();
+        let snapshot = match crate::query::load_window_snapshot(
+            &state.config,
+            &state.database_path,
+            window,
+            query_at,
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return CommandResponse::text(&format!("读取统计数据失败: {error}"));
+            }
+        };
         let health = state
             .health
             .read()
             .ok()
             .map(|value| value.clone())
             .unwrap_or_default();
-        let mut chunks = match crate::report::format_status(
-            &state.config,
-            &cache,
-            &health,
-            window,
-            model.as_deref(),
-        ) {
-            Ok(chunks) => chunks,
-            Err(error) => return CommandResponse::text(&error),
-        };
+        let mut chunks =
+            match crate::report::format_status(&state.config, &snapshot, &health, model.as_deref())
+            {
+                Ok(chunks) => chunks,
+                Err(error) => return CommandResponse::text(&error),
+            };
         if let Some(model) = model
             && state.config.perf_metrics.enabled
         {
@@ -99,13 +102,7 @@ mod plugin {
         let Some(state) = allowed_state(request) else {
             return CommandResponse::text("当前会话未启用模型监控查询");
         };
-        let cache = state
-            .reports
-            .read()
-            .ok()
-            .map(|value| value.clone())
-            .unwrap_or_default();
-        let chunks = crate::report::format_model_list(&state.config, &cache);
+        let chunks = crate::report::format_model_list(&state.config, crate::state::unix_now());
         respond_chunks(request, chunks)
     }
 
@@ -124,13 +121,18 @@ mod plugin {
             Ok(query) => query,
             Err(error) => return CommandResponse::text(&error),
         };
-        let cache = state
-            .reports
-            .read()
-            .ok()
-            .map(|value| value.clone())
-            .unwrap_or_default();
-        match crate::report::format_errors(&state.config, &cache, window, model.as_deref()) {
+        let snapshot = match crate::query::load_window_snapshot(
+            &state.config,
+            &state.database_path,
+            window,
+            crate::state::unix_now(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return CommandResponse::text(&format!("读取统计数据失败: {error}"));
+            }
+        };
+        match crate::report::format_errors(&state.config, &snapshot, model.as_deref()) {
             Ok(chunks) => respond_chunks(request, chunks),
             Err(error) => CommandResponse::text(&error),
         }
@@ -156,12 +158,12 @@ mod plugin {
             .ok()
             .map(|value| value.clone())
             .unwrap_or_default();
-        let cache = state
-            .reports
-            .read()
-            .ok()
-            .map(|value| value.clone())
-            .unwrap_or_default();
+        let database = match crate::query::load_database_stats(&state.database_path) {
+            Ok(database) => database,
+            Err(error) => {
+                return CommandResponse::text(&format!("读取数据库状态失败: {error}"));
+            }
+        };
         let last_heartbeat_at = state
             .push
             .lock()
@@ -173,7 +175,7 @@ mod plugin {
             .map(|push| push.last_push_at)
             .unwrap_or_default();
         CommandResponse::text(&crate::report::format_health(
-            &cache,
+            &database,
             &health,
             &state.database_path.display().to_string(),
             state.config.push.enabled,
